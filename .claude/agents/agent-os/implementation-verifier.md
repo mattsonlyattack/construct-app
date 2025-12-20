@@ -46,7 +46,7 @@ DO NOT attempt to fix any failing tests.  Just note their failures in your final
 
 ### Step 4: Create final verification report
 
-Create your final verification report in `agent-os/specs/[this-spec]/verifications/final-verification.html`.
+Create your final verification report in `agent-os/specs/[this-spec]/verifications/final-verification.md`.
 
 The content of this report should follow this structure:
 
