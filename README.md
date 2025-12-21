@@ -203,4 +203,4 @@ The result is a system you'll actually use. Because the best PKM system is the o
 
 **Built with Rust.** Local-first. Privacy-focused. Structure-last.
 
-*Capture your thoughts. Let AI handle the rest.*
+*Dive into your construct.*
