@@ -18,12 +18,24 @@ CREATE TABLE IF NOT EXISTS tags (
 );
 
 -- Junction table: links notes to tags (many-to-many)
+-- Includes AI-first metadata: confidence scores and source provenance
 CREATE TABLE IF NOT EXISTS note_tags (
     note_id INTEGER NOT NULL,
     tag_id INTEGER NOT NULL,
+    confidence REAL DEFAULT 1.0,
+    source TEXT DEFAULT 'user',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (note_id, tag_id),
     FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+);
+
+-- Tag aliases: SKOS-style prefLabel/altLabel synonym mapping
+-- Maps alternate forms ("ML", "machine-learning") to canonical tag IDs
+CREATE TABLE IF NOT EXISTS tag_aliases (
+    alias TEXT PRIMARY KEY COLLATE NOCASE,
+    canonical_tag_id INTEGER NOT NULL,
+    FOREIGN KEY (canonical_tag_id) REFERENCES tags(id) ON DELETE CASCADE
 );
 
 -- Index for sorting notes by creation date

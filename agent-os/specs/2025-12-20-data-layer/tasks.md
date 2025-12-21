@@ -1,7 +1,7 @@
 # Task Breakdown: Data Layer
 
 ## Overview
-Total Tasks: 12
+Total Tasks: 14
 
 This spec establishes the foundational SQLite database layer for the notes application. Since this is a backend-only data layer with no API or UI components, the task groups focus on schema definition, database connection management, and verification testing.
 
@@ -26,11 +26,21 @@ This spec establishes the foundational SQLite database layer for the notes appli
     - idx_note_tags_note index on note_tags(note_id)
     - idx_note_tags_tag index on note_tags(tag_id)
     - Use CREATE INDEX IF NOT EXISTS for idempotent execution
+  - [x] 1.4 Add AI-first metadata columns to note_tags table
+    - confidence REAL DEFAULT 1.0 for LLM confidence scores
+    - source TEXT DEFAULT 'user' to distinguish user-explicit vs llm-inferred
+    - created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  - [x] 1.5 Add tag_aliases table for SKOS-style synonym mapping
+    - alias TEXT PRIMARY KEY COLLATE NOCASE
+    - canonical_tag_id INTEGER NOT NULL with foreign key to tags(id)
+    - ON DELETE CASCADE for foreign key reference
 
 **Acceptance Criteria:**
 - `src/db/schema.rs` contains complete INITIAL_SCHEMA constant
 - All CREATE statements use IF NOT EXISTS pattern
 - Schema follows spec exactly (no title field on notes, COLLATE NOCASE on tags.name)
+- note_tags table includes confidence, source, and created_at columns
+- tag_aliases table exists for synonym resolution
 
 ---
 

@@ -35,8 +35,18 @@ Establish the foundational SQLite database layer with schema for notes and tags,
 - Create `note_tags` table with composite primary key (note_id, tag_id)
 - Define foreign keys to both `notes` and `tags` tables
 - Use ON DELETE CASCADE for both foreign key references
+- Include `confidence` column as REAL DEFAULT 1.0 for LLM confidence scores
+- Include `source` column as TEXT DEFAULT 'user' to distinguish user-explicit vs llm-inferred tags
+- Include `created_at` column as TEXT DEFAULT CURRENT_TIMESTAMP
 - Create `idx_note_tags_note` index on `note_id`
 - Create `idx_note_tags_tag` index on `tag_id`
+
+**Tag Aliases Table (SKOS prefLabel/altLabel pattern)**
+- Create `tag_aliases` table for mapping alternate forms to canonical tags
+- Include `alias` column as TEXT PRIMARY KEY with COLLATE NOCASE
+- Include `canonical_tag_id` column as INTEGER NOT NULL
+- Define foreign key to `tags` table with ON DELETE CASCADE
+- Supports synonym resolution: "ML" → "machine-learning", "NYC" → "new-york-city"
 
 **Schema Initialization Strategy**
 - Store complete schema as `INITIAL_SCHEMA` constant in `schema.rs`

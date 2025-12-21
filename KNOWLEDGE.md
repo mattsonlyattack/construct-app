@@ -1,6 +1,6 @@
 # Building a knowledge graph PKM: what information science teaches engineers
 
-**A local-first personal knowledge management tool with LLM-inferred relationships should adopt a property graph model on SQLite, use SKOS-inspired vocabulary patterns without full semantic web complexity, and implement folksonomy-first organization with lightweight faceted structure.** The critical insight from information science research is that personal knowledge systems have fundamentally different requirements than institutional ones—user vocabulary is inherently correct, emergent structure beats imposed taxonomy, and automated extraction must be treated as suggestions requiring human confirmation, not authoritative facts.
+**A local-first personal knowledge management tool with LLM-inferred relationships should adopt a property graph model on SQLite, use SKOS-inspired vocabulary patterns without full semantic web complexity, and implement folksonomy-first organization with lightweight faceted structure.** The critical insight from information science research is that personal knowledge systems have fundamentally different requirements than institutional ones—user vocabulary is inherently correct, emergent structure beats imposed taxonomy, and automated extraction should carry confidence metadata that enables later correction rather than blocking capture upfront.
 
 The "cons" tool you're building sits at an interesting intersection: it needs graph structures sophisticated enough to support semantic relationships like "contradicts" and "prerequisite for," yet simple enough for a solo developer to maintain. Research across knowledge organization systems, existing PKM tools, and ontology design reveals a clear path—borrow conceptual patterns from standards like SKOS and Dublin Core while implementing them on pragmatic infrastructure like SQLite property graphs rather than full RDF stacks.
 
@@ -15,6 +15,34 @@ The spectrum of Knowledge Organization Systems runs from unstructured folksonomi
 Ranganathan's faceted classification from the 1930s provides a powerful pattern that scales down beautifully to personal collections. Rather than forcing notes into a single hierarchy, analyze subjects into independent facets—what type of note is this, what domain does it belong to, what's its status, when is it relevant. A note can be a "tutorial" (type) about "machine learning" (domain) that's "evergreen" (status) without these facets conflicting. For cons, consider implementing **3-5 fixed facets maximum**: type (note/article/reference/idea), domain (user-configurable), status (draft/active/archived/evergreen), and perhaps source (original/clipped/synthesized).
 
 The critical distinction library science makes between **aboutness and mention** directly applies to entity extraction. A note that mentions "Python" might actually be about debugging strategies—the entity appears but isn't the subject. Your LLM extraction will capture mentions, but you'll need a mechanism (perhaps confidence scoring, perhaps user confirmation) to distinguish primary topics from incidental references.
+
+---
+
+## AI-first personal tools: a different calculus for errors
+
+The recommendations in this document draw heavily from enterprise and institutional knowledge management research, where errors have legal, compliance, and organizational consequences. **For a personal tool where you're the only user, the calculus is fundamentally different.** A wrong tag in your personal notes doesn't propagate to colleagues or trigger audit failures—it just means you might miss something in search, with full-text search as your fallback.
+
+This shifts the design philosophy from **confirmation gates** to **tiered confidence with correction affordances**:
+
+| Inference Type | Error Severity | MVP Behavior | Stored Metadata |
+|----------------|----------------|--------------|-----------------|
+| Tags | Low (FTS fallback) | Apply immediately | `confidence`, `source: "llm"` |
+| Entity mentions | Low | Extract and link | `confidence`, `mention_type` |
+| Entity normalization | Medium | Accept LLM canonical form | `aliases[]`, `merge_candidates[]` |
+| Semantic relationships | **High** | Skip for MVP | — |
+
+**Why semantic relationships are deferred:** "Supports," "contradicts," and "prerequisite for" are where errors actually hurt—they pollute synthesis and discovery queries, actively misleading you. Tags and entity mentions are recoverable; a wrong "contradicts" relationship is not. Save relationship inference for v2 when you have a corpus to evaluate accuracy against and UI for surfacing suggestions without asserting them as facts.
+
+**Correction as a byproduct of use, not a workflow:** Instead of confirmation queues that interrupt capture, build correction affordances into surfaces you're already visiting:
+
+- **Search results**: "Also tagged: X, Y, Z" with one-click removal
+- **Note view**: inline tag chips that are deletable/editable
+- **Entity pages**: show all notes mentioning this entity, make merge opportunities obvious
+- **Dashboard (later)**: surface statistical anomalies—entities with single mentions, orphan tags, notes with zero connections
+
+Errors get fixed *when they matter* (during retrieval and synthesis) rather than *when they happen* (interrupting capture). This means accepting that your graph will be noisy initially, optimizing for capture velocity, and trusting that noise is recoverable through use.
+
+**The philosophical resolution:** "AI-first" ≠ "AI-infallible." It means AI does the work, human intervenes only when they notice and care. You're building for your future self who's searching, not your present self who's capturing.
 
 ---
 
@@ -106,14 +134,19 @@ For temporal concerns, the "this was true then but not now" problem requires exp
 
 **Data model:** Property graph on SQLite with SKOS-inspired vocabulary. Nodes table for notes, concepts, and structured records (contacts/events/bibliographic entries) with JSON properties. Edges table with source, target, type, confidence, provenance, and timestamps. Full-text search via SQLite FTS5 for recall queries.
 
-**Entity extraction pipeline:** LLM extracts candidate entities with types (person, organization, concept, etc.). Candidates surfaced in UI for user confirmation before becoming graph nodes. Alias tables map variants to canonical entities. Confidence thresholds filter low-quality extractions.
+**MVP schema additions for AI-first tagging:**
+- `note_tags` junction table includes `confidence` (REAL), `source` ('user' | 'llm'), and `created_at` columns
+- `tag_aliases` table maps alternate forms to canonical tag IDs (SKOS prefLabel/altLabel pattern)
+- Store all LLM inferences immediately; never block capture for confirmation
 
-**Relationship inference:** LLM analyzes note pairs to suggest semantic relationships (supports, contradicts, extends, etc.). Store as provisional with `userConfirmed: false`. Surface high-confidence suggestions in discovery interfaces. Allow one-click promotion to explicit relationships.
+**Entity extraction pipeline (MVP):** LLM extracts tags and applies them immediately with confidence scores and `source: "llm"`. Accept LLM's canonical form for tag normalization. Build alias tables mapping variants to canonical IDs. Defer entity typing and structured extraction to v2.
 
-**Query support:** Recall uses full-text search plus entity-to-note traversal. Synthesis uses neighborhood expansion from seed entities with centrality-based ranking. Discovery uses path-finding between concepts in different clusters, betweenness centrality to find bridge notes.
+**Relationship inference (defer to v2):** Semantic relationships like "supports" and "contradicts" are high-stakes errors that pollute discovery queries. Skip for MVP until you have: (1) a corpus to evaluate accuracy against, (2) UI for surfacing suggestions without asserting them as facts, (3) feedback loops to improve extraction.
 
-**What to skip:** Full RDF/SPARQL stack, OWL ontologies, complex inference engines, enterprise graph databases. These add complexity without proportional value for personal scale.
+**Query support:** Recall uses full-text search plus tag-to-note traversal. Synthesis and discovery features that depend on semantic relationships are deferred.
 
-**Failure modes to design against:** LLM hallucination (require confirmation for high-stakes categorizations), entity proliferation (aggressive alias detection and merge suggestions), tag explosion (autocomplete and cleanup dashboards), temporal confusion (explicit validity metadata), scale degradation (filtering controls, local rather than global graph views).
+**What to skip:** Full RDF/SPARQL stack, OWL ontologies, complex inference engines, enterprise graph databases, confirmation workflows that block capture. These add complexity without proportional value for personal scale.
 
-The deepest insight from this research is that **personal knowledge management is fundamentally about augmenting human judgment, not replacing it**. Your LLMs should propose, surface, and suggest—but the user's confirmation transforms uncertain extraction into trusted knowledge. Build for that human-in-the-loop workflow, and the system will remain useful as it scales.
+**Failure modes to design against:** LLM hallucination (store confidence metadata, build correction into retrieval UI), entity proliferation (aggressive alias detection and merge suggestions), tag explosion (autocomplete and cleanup dashboards), scale degradation (filtering controls, local rather than global graph views).
+
+The deepest insight from this research is that **personal knowledge management is fundamentally about augmenting human judgment, not replacing it**—but for a personal tool, that augmentation happens during retrieval and synthesis, not during capture. Your LLMs should tag immediately with confidence metadata; correction happens when errors surface during use, not through upfront confirmation gates.
