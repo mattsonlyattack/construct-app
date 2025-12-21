@@ -1,0 +1,28 @@
+# Build artifacts
+/target/
+
+# Cargo.lock for libraries (remove this line if building a binary)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Debug
+*.log

@@ -1,14 +1,14 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+pub mod db;
+
+pub use db::Database;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    fn database_accessible_from_crate_root() {
+        let db = Database::in_memory();
+        assert!(db.is_ok());
     }
 }
