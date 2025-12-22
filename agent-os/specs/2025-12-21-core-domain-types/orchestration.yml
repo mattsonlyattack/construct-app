@@ -1,0 +1,20 @@
+task_groups:
+  - name: Dependencies and Schema Updates
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: TagSource Enum and Tag Struct
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: TagAssignment and Note Structs
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+
+# NOTE: Prefer idiomatic Rust and pragmatic solutions over dogmatic rule-following.
+# Standards are guidelines, not rigid constraints.

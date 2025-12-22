@@ -146,4 +146,163 @@ mod tests {
             .unwrap();
         assert_eq!(count, 1);
     }
+
+    #[test]
+    fn note_tags_has_verified_column() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check verified column exists and is INTEGER
+        let mut stmt = db
+            .connection()
+            .prepare("PRAGMA table_info(note_tags)")
+            .unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check verified column exists and is INTEGER
+        let verified_column = columns
+            .iter()
+            .find(|(name, _)| name == "verified")
+            .expect("verified column should exist");
+
+        assert_eq!(verified_column.1, "INTEGER");
+
+        // Verify default value by inserting a row without specifying verified
+        db.connection()
+            .execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+                [],
+            )
+            .unwrap();
+        db.connection()
+            .execute("INSERT INTO tags (id, name) VALUES (1, 'test tag')", [])
+            .unwrap();
+        db.connection()
+            .execute("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)", [])
+            .unwrap();
+
+        let verified: i32 = db
+            .connection()
+            .query_row(
+                "SELECT verified FROM note_tags WHERE note_id = 1 AND tag_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(verified, 0);
+    }
+
+    #[test]
+    fn note_tags_has_model_version_column() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check model_version column exists
+        let mut stmt = db
+            .connection()
+            .prepare("PRAGMA table_info(note_tags)")
+            .unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check model_version column exists and is TEXT (nullable)
+        let model_version_column = columns
+            .iter()
+            .find(|(name, _)| name == "model_version")
+            .expect("model_version column should exist");
+
+        assert_eq!(model_version_column.1, "TEXT");
+
+        // Verify NULL is allowed by inserting without model_version
+        db.connection()
+            .execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+                [],
+            )
+            .unwrap();
+        db.connection()
+            .execute("INSERT INTO tags (id, name) VALUES (1, 'test tag')", [])
+            .unwrap();
+        db.connection()
+            .execute("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)", [])
+            .unwrap();
+
+        let model_version: Option<String> = db
+            .connection()
+            .query_row(
+                "SELECT model_version FROM note_tags WHERE note_id = 1 AND tag_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(model_version, None);
+    }
+
+    #[test]
+    fn note_tags_created_at_is_integer() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check created_at column type
+        let mut stmt = db
+            .connection()
+            .prepare("PRAGMA table_info(note_tags)")
+            .unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check created_at column is INTEGER
+        let created_at_column = columns
+            .iter()
+            .find(|(name, _)| name == "created_at")
+            .expect("created_at column should exist");
+
+        assert_eq!(created_at_column.1, "INTEGER");
+    }
+
+    #[test]
+    fn idx_tag_aliases_canonical_exists() {
+        let db = Database::in_memory().unwrap();
+
+        let indexes: Vec<String> = db
+            .connection()
+            .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name = 'idx_tag_aliases_canonical'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            indexes.contains(&"idx_tag_aliases_canonical".to_string()),
+            "idx_tag_aliases_canonical index should exist"
+        );
+    }
 }

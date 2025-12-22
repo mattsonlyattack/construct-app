@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS note_tags (
     tag_id INTEGER NOT NULL,
     confidence REAL DEFAULT 1.0,
     source TEXT DEFAULT 'user',
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_at INTEGER,
+    verified INTEGER DEFAULT 0,
+    model_version TEXT,
     PRIMARY KEY (note_id, tag_id),
     FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
     FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
@@ -44,4 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
 -- Indexes for efficient junction table lookups
 CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id);
 CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
+
+-- Index for efficient tag alias lookup by canonical tag
+CREATE INDEX IF NOT EXISTS idx_tag_aliases_canonical ON tag_aliases(canonical_tag_id);
 "#;
