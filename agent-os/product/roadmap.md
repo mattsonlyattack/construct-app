@@ -4,7 +4,7 @@
 
 1. [x] SQLite schema design -- Create notes, tags, and note_tags junction tables with proper indexes for efficient querying and full-text search preparation `S`
 
-2. [ ] Core domain types -- Define Note, Tag, and related structs with proper Rust idioms (derive macros, Display implementations, builder patterns where appropriate) `S`
+2. [x] Core domain types -- Define Note, Tag, and related structs with proper Rust idioms (derive macros, Display implementations, builder patterns where appropriate) `S`
 
 3. [ ] NoteService implementation -- Build the core business logic layer independent of any UI, handling note CRUD operations and tag management `M`
 
