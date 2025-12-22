@@ -1,96 +1,114 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use super::TagSource;
+use super::{TagId, TagSource};
 
 /// Assignment of a tag to a note with AI-first metadata.
 ///
-/// Tracks confidence, source, verification status, and model version for each
-/// tag-note relationship to distinguish LLM-inferred tags from user-created ones.
+/// Tracks source (with embedded confidence/model for LLM), verification status,
+/// and timestamps for each tag-note relationship.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TagAssignment {
-    /// The ID of the tag being assigned.
-    pub tag_id: i64,
-    /// Confidence score (0-100 percentage).
-    pub confidence: u8,
-    /// Source of the tag assignment (user or LLM).
-    pub source: TagSource,
-    /// When this tag assignment was created.
+    tag_id: TagId,
+    source: TagSource,
     #[serde(with = "time::serde::rfc3339")]
-    pub created_at: OffsetDateTime,
-    /// Whether this assignment has been verified by the user.
-    pub verified: bool,
-    /// LLM model version that produced this assignment (None for user-created).
-    pub model_version: Option<String>,
+    created_at: OffsetDateTime,
+    verified: bool,
 }
 
 impl TagAssignment {
-    /// Creates a new tag assignment with default verified=false.
+    /// Creates a new LLM-inferred tag assignment.
     ///
     /// # Examples
     ///
     /// ```
-    /// use cons::{TagAssignment, TagSource};
+    /// use cons::{TagAssignment, TagId};
     /// use time::OffsetDateTime;
     ///
     /// let now = OffsetDateTime::now_utc();
-    /// let assignment = TagAssignment::new(
-    ///     1,
+    /// let assignment = TagAssignment::llm(
+    ///     TagId::new(1),
+    ///     "deepseek-r1:8b",
     ///     85,
-    ///     TagSource::Llm,
     ///     now,
-    ///     Some("deepseek-r1:8b".to_string())
     /// );
     ///
-    /// assert_eq!(assignment.tag_id, 1);
-    /// assert_eq!(assignment.confidence, 85);
-    /// assert_eq!(assignment.source, TagSource::Llm);
-    /// assert!(!assignment.verified);
-    /// assert_eq!(assignment.model_version, Some("deepseek-r1:8b".to_string()));
+    /// assert_eq!(assignment.tag_id(), TagId::new(1));
+    /// assert_eq!(assignment.confidence(), 85);
+    /// assert!(!assignment.verified());
     /// ```
-    pub fn new(
-        tag_id: i64,
+    pub fn llm(
+        tag_id: TagId,
+        model: impl Into<String>,
         confidence: u8,
-        source: TagSource,
         created_at: OffsetDateTime,
-        model_version: Option<String>,
     ) -> Self {
         Self {
             tag_id,
-            confidence,
-            source,
+            source: TagSource::llm(model, confidence),
             created_at,
             verified: false,
-            model_version,
         }
     }
 
-    /// Creates a user-created tag assignment with confidence=100 and no model version.
+    /// Creates a user-created tag assignment with 100% confidence.
     ///
     /// # Examples
     ///
     /// ```
-    /// use cons::{TagAssignment, TagSource};
+    /// use cons::{TagAssignment, TagId, TagSource};
     /// use time::OffsetDateTime;
     ///
     /// let now = OffsetDateTime::now_utc();
-    /// let assignment = TagAssignment::user_created(42, now);
+    /// let assignment = TagAssignment::user(TagId::new(42), now);
     ///
-    /// assert_eq!(assignment.tag_id, 42);
-    /// assert_eq!(assignment.confidence, 100);
-    /// assert_eq!(assignment.source, TagSource::User);
-    /// assert!(!assignment.verified);
-    /// assert_eq!(assignment.model_version, None);
+    /// assert_eq!(assignment.tag_id(), TagId::new(42));
+    /// assert_eq!(assignment.confidence(), 100);
+    /// assert!(assignment.source().is_user());
     /// ```
-    pub fn user_created(tag_id: i64, created_at: OffsetDateTime) -> Self {
+    pub fn user(tag_id: TagId, created_at: OffsetDateTime) -> Self {
         Self {
             tag_id,
-            confidence: 100,
             source: TagSource::User,
             created_at,
             verified: false,
-            model_version: None,
         }
+    }
+
+    /// Returns the tag ID.
+    pub fn tag_id(&self) -> TagId {
+        self.tag_id
+    }
+
+    /// Returns the source of this tag assignment.
+    pub fn source(&self) -> &TagSource {
+        &self.source
+    }
+
+    /// Returns the confidence score (0-100).
+    /// User tags always return 100.
+    pub fn confidence(&self) -> u8 {
+        self.source.confidence()
+    }
+
+    /// Returns the model identifier if this is an LLM-inferred tag.
+    pub fn model(&self) -> Option<&str> {
+        self.source.model()
+    }
+
+    /// Returns when this tag assignment was created.
+    pub fn created_at(&self) -> OffsetDateTime {
+        self.created_at
+    }
+
+    /// Returns whether this assignment has been verified by the user.
+    pub fn verified(&self) -> bool {
+        self.verified
+    }
+
+    /// Marks this assignment as verified by the user.
+    pub fn verify(&mut self) {
+        self.verified = true;
     }
 }
 
@@ -99,15 +117,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tag_assignment_serialization_roundtrip() {
+    fn llm_assignment_has_correct_metadata() {
         let now = OffsetDateTime::now_utc();
-        let assignment = TagAssignment::new(
-            1,
-            85,
-            TagSource::Llm,
-            now,
-            Some("deepseek-r1:8b".to_string()),
-        );
+        let assignment = TagAssignment::llm(TagId::new(1), "deepseek-r1:8b", 85, now);
+
+        assert_eq!(assignment.tag_id(), TagId::new(1));
+        assert_eq!(assignment.confidence(), 85);
+        assert_eq!(assignment.model(), Some("deepseek-r1:8b"));
+        assert!(!assignment.verified());
+    }
+
+    #[test]
+    fn user_assignment_has_full_confidence() {
+        let now = OffsetDateTime::now_utc();
+        let assignment = TagAssignment::user(TagId::new(42), now);
+
+        assert_eq!(assignment.tag_id(), TagId::new(42));
+        assert_eq!(assignment.confidence(), 100);
+        assert_eq!(assignment.model(), None);
+        assert!(assignment.source().is_user());
+    }
+
+    #[test]
+    fn serialization_roundtrip() {
+        let now = OffsetDateTime::now_utc();
+        let assignment = TagAssignment::llm(TagId::new(1), "model", 75, now);
 
         let json = serde_json::to_string(&assignment).unwrap();
         let deserialized: TagAssignment = serde_json::from_str(&json).unwrap();
@@ -116,24 +150,12 @@ mod tests {
     }
 
     #[test]
-    fn test_tag_assignment_equality_with_same_confidence() {
+    fn verify_marks_as_verified() {
         let now = OffsetDateTime::now_utc();
-        let assignment1 = TagAssignment::new(1, 85, TagSource::Llm, now, Some("model".to_string()));
-        let assignment2 = TagAssignment::new(1, 85, TagSource::Llm, now, Some("model".to_string()));
+        let mut assignment = TagAssignment::llm(TagId::new(1), "model", 60, now);
 
-        assert_eq!(assignment1, assignment2);
-    }
-
-    #[test]
-    fn test_tag_assignment_user_created_constructor() {
-        let now = OffsetDateTime::now_utc();
-        let assignment = TagAssignment::user_created(42, now);
-
-        assert_eq!(assignment.tag_id, 42);
-        assert_eq!(assignment.confidence, 100);
-        assert_eq!(assignment.source, TagSource::User);
-        assert_eq!(assignment.created_at, now);
-        assert!(!assignment.verified);
-        assert_eq!(assignment.model_version, None);
+        assert!(!assignment.verified());
+        assignment.verify();
+        assert!(assignment.verified());
     }
 }
