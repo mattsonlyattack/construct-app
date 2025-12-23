@@ -1,8 +1,10 @@
 pub mod db;
 pub mod models;
+pub mod service;
 
 pub use db::Database;
 pub use models::{Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
+pub use service::{ListNotesOptions, NoteService};
 
 #[cfg(test)]
 mod tests {

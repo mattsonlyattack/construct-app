@@ -1,0 +1,31 @@
+task_groups:
+  - name: NoteService Module Foundation
+    claude_code_subagent: rust-engineer
+    standards:
+      - global/*
+      - rust/*
+      - backend/*
+  - name: Note Create, Get, Delete
+    claude_code_subagent: rust-engineer
+    standards:
+      - global/*
+      - rust/*
+      - backend/*
+  - name: Tag Operations and Note-Tag Relationships
+    claude_code_subagent: rust-engineer
+    standards:
+      - global/*
+      - rust/*
+      - backend/*
+  - name: List Notes with Filtering
+    claude_code_subagent: rust-engineer
+    standards:
+      - global/*
+      - rust/*
+      - backend/*
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - global/*
+      - rust/*
+      - testing/*
