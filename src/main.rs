@@ -19,6 +19,8 @@ struct Cli {
 enum Commands {
     /// Add a new note with optional tags
     Add(AddCommand),
+    /// List notes with optional filtering and pagination
+    List(ListCommand),
 }
 
 /// Add a new note
@@ -33,11 +35,24 @@ struct AddCommand {
     tags: Option<String>,
 }
 
+/// List notes with optional filtering
+#[derive(Parser)]
+struct ListCommand {
+    /// Filter notes by comma-separated tags (notes must have ALL specified tags)
+    #[arg(short, long, value_name = "TAGS")]
+    tags: Option<String>,
+
+    /// Limit the number of notes to display
+    #[arg(short, long, value_name = "LIMIT")]
+    limit: Option<usize>,
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
         Commands::Add(cmd) => handle_add(cmd),
+        Commands::List(cmd) => handle_list(cmd),
     };
 
     if let Err(e) = result {
@@ -50,12 +65,12 @@ fn main() {
 
 /// Determines if an error is a user error (vs internal error).
 ///
-/// User errors include validation failures like empty content.
+/// User errors include validation failures like empty content or invalid limits.
 /// Internal errors include database failures and I/O errors.
 fn is_user_error(error: &anyhow::Error) -> bool {
     // Check if the error message indicates a user error
     let error_msg = error.to_string();
-    error_msg.contains("cannot be empty")
+    error_msg.contains("cannot be empty") || error_msg.contains("must be greater than 0")
 }
 
 /// Handles the add command by creating a new note.
@@ -128,6 +143,143 @@ fn ensure_database_directory(db_path: &Path) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+/// Handles the list command by displaying notes.
+fn handle_list(cmd: &ListCommand) -> Result<()> {
+    // Validate limit if provided
+    if let Some(limit) = cmd.limit {
+        if limit == 0 {
+            anyhow::bail!("Limit must be greater than 0");
+        }
+    }
+
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+
+    execute_list(cmd, db)
+}
+
+/// Executes the list command logic with a provided database.
+///
+/// This function is separated from `handle_list` to allow testing with in-memory databases.
+fn execute_list(cmd: &ListCommand, db: Database) -> Result<()> {
+    use cons::ListNotesOptions;
+
+    let service = NoteService::new(db);
+
+    // Parse tags if provided
+    let parsed_tags = cmd.tags.as_deref().map(parse_tags);
+    let tags_option = if parsed_tags.as_ref().map(|t| t.is_empty()).unwrap_or(true) {
+        None
+    } else {
+        parsed_tags
+    };
+
+    // When tags are provided AND limit is specified, we need to get all matching notes
+    // first, then reverse and apply limit to get oldest N notes.
+    // Otherwise, NoteService applies limit in DESC order (newest N), which is wrong
+    // when we want chronological (oldest N).
+    let limit_for_service = if tags_option.is_some() && cmd.limit.is_some() {
+        None // Get all matching notes, we'll apply limit after reversing
+    } else {
+        cmd.limit // No tags or no limit - can use limit directly
+    };
+
+    // Build ListNotesOptions
+    let options = ListNotesOptions {
+        limit: limit_for_service,
+        tags: tags_option,
+    };
+
+    // Fetch notes (returns newest first)
+    let mut notes = service
+        .list_notes(options)
+        .context("Failed to list notes")?;
+
+    // Reverse to get chronological order (oldest first)
+    notes.reverse();
+
+    // Apply limit after reversing if specified (needed when tags were provided)
+    if let Some(limit) = cmd.limit {
+        if notes.len() > limit {
+            notes.truncate(limit);
+        }
+    }
+
+    // Handle empty results
+    if notes.is_empty() {
+        println!("No notes found");
+        return Ok(());
+    }
+
+    // Display notes
+    for note in notes {
+        display_note(&note, &service)?;
+        println!(); // Blank line between notes
+    }
+
+    Ok(())
+}
+
+/// Displays a single note in multi-line format.
+fn display_note(note: &cons::Note, service: &NoteService) -> Result<()> {
+    use time::format_description;
+
+    // Format timestamp as YYYY-MM-DD HH:MM:SS
+    let created_at = note.created_at();
+    let format = format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second]")
+        .map_err(|e| anyhow::anyhow!("Failed to parse format: {}", e))?;
+    let timestamp = created_at
+        .format(&format)
+        .map_err(|e| anyhow::anyhow!("Failed to format timestamp: {}", e))?;
+
+    // Display ID and timestamp
+    println!("[{}] Created: {}", note.id().get(), timestamp);
+
+    // Resolve and display tags
+    let tag_names = get_tag_names(service.database(), note.tags())?;
+    if !tag_names.is_empty() {
+        println!("Tags: {}", tag_names.join(", "));
+    }
+
+    // Display content
+    println!("Content: {}", note.content());
+
+    Ok(())
+}
+
+/// Gets tag names from the database for the given tag IDs.
+fn get_tag_names(db: &Database, tag_assignments: &[cons::TagAssignment]) -> Result<Vec<String>> {
+    if tag_assignments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = db.connection();
+    let tag_ids: Vec<i64> = tag_assignments.iter().map(|ta| ta.tag_id().get()).collect();
+
+    // Build query with placeholders
+    let placeholders: Vec<String> = (0..tag_ids.len()).map(|_| "?".to_string()).collect();
+    let query = format!(
+        "SELECT name FROM tags WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&query)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(tag_ids.iter()), |row| {
+        row.get::<_, String>(0)
+    })?;
+
+    let mut names = Vec::new();
+    for row_result in rows {
+        names.push(row_result?);
+    }
+
+    Ok(names)
 }
 
 /// Parses comma-separated tags from a string.
