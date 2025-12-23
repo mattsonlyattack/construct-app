@@ -1,0 +1,17 @@
+task_groups:
+  - name: Dependencies and CLI Structure
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Database Path Resolution and Add Command Logic
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: User Output and Error Handling
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Coverage
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
