@@ -24,37 +24,39 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 11. [ ] Tag normalization -- Implement consistent tag formatting (lowercase, hyphenation, deduplication) across manual and AI-generated tags `XS`
 
-12. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command `M`
+12. [ ] Note text enhancement -- AI expands fragmentary notes into complete thoughts with clarified intent, storing both original and enhanced versions with provenance metadata `M`
 
-13. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
+13. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command `M`
 
-14. [ ] Error message polish -- Ensure all user-facing errors are clear and actionable, following error handling standards `S`
+14. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
 
-15. [ ] README documentation -- Write usage examples, installation instructions, and architecture overview for open source release `S`
+15. [ ] Error message polish -- Ensure all user-facing errors are clear and actionable, following error handling standards `S`
 
-16. [ ] ARCHITECTURE.md -- Document system design decisions, layered architecture, and future extensibility for work sample context `S`
+16. [ ] README documentation -- Write usage examples, installation instructions, and architecture overview for open source release `S`
 
-17. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
+17. [ ] ARCHITECTURE.md -- Document system design decisions, layered architecture, and future extensibility for work sample context `S`
 
-18. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
+18. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
 
-19. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
+19. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
 
-20. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
+20. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
 
-21. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
+21. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
 
-22. [ ] Semantic search -- Add vector embeddings (local model) for meaning-based retrieval beyond keyword matching `L`
+22. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
 
-23. [ ] Entity extraction -- Automatically identify and index people, projects, dates, and concepts mentioned in notes `L`
+23. [ ] Semantic search -- Add vector embeddings (local model) for meaning-based retrieval beyond keyword matching `L`
 
-24. [ ] Relationship mapping -- AI-discovered connections between notes based on shared entities and semantic similarity `L`
+24. [ ] Entity extraction -- Automatically identify and index people, projects, dates, and concepts mentioned in notes `L`
 
-25. [ ] GUI desktop app -- Tauri-based graphical interface reusing same NoteService layer `XL`
+25. [ ] Relationship mapping -- AI-discovered connections between notes based on shared entities and semantic similarity `L`
 
-26. [ ] Note editing -- Add `cons edit` command for modifying existing notes with re-tagging `M`
+26. [ ] GUI desktop app -- Tauri-based graphical interface reusing same NoteService layer `XL`
 
-27. [ ] Import from other apps -- Bulk import from common formats (Markdown files, Notion export, Apple Notes) `L`
+27. [ ] Note editing -- Add `cons edit` command for modifying existing notes with re-tagging `M`
+
+28. [ ] Import from other apps -- Bulk import from common formats (Markdown files, Notion export, Apple Notes) `L`
 
 > Notes
 > - Order reflects technical dependencies: schema before service, service before CLI, CLI before AI integration
