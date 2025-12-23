@@ -148,10 +148,10 @@ fn ensure_database_directory(db_path: &Path) -> Result<()> {
 /// Handles the list command by displaying notes.
 fn handle_list(cmd: &ListCommand) -> Result<()> {
     // Validate limit if provided
-    if let Some(limit) = cmd.limit {
-        if limit == 0 {
-            anyhow::bail!("Limit must be greater than 0");
-        }
+    if let Some(limit) = cmd.limit
+        && limit == 0
+    {
+        anyhow::bail!("Limit must be greater than 0");
     }
 
     // Get database path and ensure directory exists
@@ -205,10 +205,10 @@ fn execute_list(cmd: &ListCommand, db: Database) -> Result<()> {
     notes.reverse();
 
     // Apply limit after reversing if specified (needed when tags were provided)
-    if let Some(limit) = cmd.limit {
-        if notes.len() > limit {
-            notes.truncate(limit);
-        }
+    if let Some(limit) = cmd.limit
+        && notes.len() > limit
+    {
+        notes.truncate(limit);
     }
 
     // Handle empty results

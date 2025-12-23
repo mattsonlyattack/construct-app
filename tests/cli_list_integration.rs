@@ -123,6 +123,8 @@ fn list_with_tags_and_limit_combines_both_flags() {
     assert_eq!(notes.len(), 2);
     assert_eq!(notes[0].id(), note1.id());
     assert_eq!(notes[1].id(), note2.id());
+    // Verify note3 is not included (limit of 2)
+    assert!(!notes.iter().any(|n| n.id() == note3.id()));
 }
 
 #[test]
