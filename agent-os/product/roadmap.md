@@ -8,7 +8,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 3. [x] NoteService implementation -- Build the core business logic layer independent of any UI, handling note CRUD operations and tag management `M`
 
-4. [ ] CLI: add command -- Implement `cons add "thought"` for instant note capture with optional manual tags via `--tags` flag `S`
+4. [x] CLI: add command -- Implement `cons add "thought"` for instant note capture with optional manual tags via `--tags` flag `S`
 
 5. [ ] CLI: list command -- Implement `cons list` showing recent notes with `--tags` filtering and `--limit` pagination `S`
 
