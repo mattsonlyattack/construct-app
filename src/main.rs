@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cons::{Database, NoteService};
-use rusqlite::OptionalExtension;
 
 /// cons - structure-last personal knowledge management CLI
 #[derive(Parser)]
@@ -168,19 +167,41 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
     // Apply default limit of 10 when not specified
     let limit = limit.unwrap_or(10);
 
-    // Parse tags if provided
+    // Parse tags if provided, converting empty to None
     let parsed_tags = tags.map(parse_tags);
+    let tags_option = match parsed_tags {
+        Some(ref tags) if tags.is_empty() => None,
+        other => other,
+    };
+
+    // When tags are provided, we need to get all matching notes first,
+    // then reverse and apply limit to get oldest N notes.
+    // Otherwise, NoteService applies limit in DESC order (newest N), which is wrong
+    // when we want chronological (oldest N).
+    let limit_for_service = if tags_option.is_some() {
+        None // Get all matching notes, we'll apply limit after reversing
+    } else {
+        Some(limit)
+    };
 
     // Build options for list_notes
     let options = cons::ListNotesOptions {
-        limit: Some(limit),
-        tags: parsed_tags,
+        limit: limit_for_service,
+        tags: tags_option,
     };
 
-    // Retrieve notes
-    let notes = service
+    // Retrieve notes (returns newest first from DB)
+    let mut notes = service
         .list_notes(options)
         .context("Failed to list notes")?;
+
+    // Reverse to get chronological order (oldest first)
+    notes.reverse();
+
+    // Apply limit after reversing
+    if notes.len() > limit {
+        notes.truncate(limit);
+    }
 
     // Handle empty results
     if notes.is_empty() {
@@ -199,13 +220,11 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
             .format(&format)
             .unwrap_or_else(|_| "Invalid date".to_string());
 
-        // Get tag names by querying the database
-        let mut tag_names = Vec::new();
-        for tag_assignment in note.tags() {
-            if let Some(tag_name) = get_tag_name(&service, tag_assignment.tag_id())? {
-                tag_names.push(format!("#{}", tag_name));
-            }
-        }
+        // Get tag names using batch query
+        let tag_names: Vec<String> = get_tag_names(service.database(), note.tags())?
+            .into_iter()
+            .map(|name| format!("#{}", name))
+            .collect();
 
         // Display note information
         println!("ID: {}", note.id().get());
@@ -220,22 +239,37 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
     Ok(())
 }
 
-/// Gets a tag name by its ID.
+/// Gets tag names from the database for the given tag assignments.
 ///
-/// Returns None if the tag does not exist.
-fn get_tag_name(service: &NoteService, tag_id: cons::TagId) -> Result<Option<String>> {
-    let conn = service.database().connection();
+/// Uses a single batch query with IN clause for efficiency.
+fn get_tag_names(db: &Database, tag_assignments: &[cons::TagAssignment]) -> Result<Vec<String>> {
+    if tag_assignments.is_empty() {
+        return Ok(Vec::new());
+    }
 
-    let name: Option<String> = conn
-        .query_row(
-            "SELECT name FROM tags WHERE id = ?1",
-            [tag_id.get()],
-            |row| row.get(0),
-        )
-        .optional()
-        .context("Failed to query tag name")?;
+    let conn = db.connection();
+    let tag_ids: Vec<i64> = tag_assignments.iter().map(|ta| ta.tag_id().get()).collect();
 
-    Ok(name)
+    // Build query with placeholders
+    let placeholders: Vec<String> = (0..tag_ids.len()).map(|_| "?".to_string()).collect();
+    let query = format!(
+        "SELECT name FROM tags WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&query).context("Failed to prepare tag query")?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(tag_ids.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .context("Failed to query tag names")?;
+
+    let mut names = Vec::new();
+    for row_result in rows {
+        names.push(row_result.context("Failed to read tag name")?);
+    }
+
+    Ok(names)
 }
 
 /// Parses comma-separated tags from a string.
@@ -398,7 +432,7 @@ mod tests {
     // --- Output Formatting Tests (Task Group 2) ---
 
     #[test]
-    fn get_tag_name_resolves_tag_id_to_display_name() {
+    fn get_tag_names_resolves_tag_ids_to_display_names() {
         let db = Database::in_memory().expect("failed to create in-memory database");
         let service = NoteService::new(db);
 
@@ -407,27 +441,24 @@ mod tests {
             .create_note("Test note", Some(&["rust", "programming"]))
             .expect("failed to create note");
 
-        // Get the first tag ID from the note
-        let tag_id = note.tags()[0].tag_id();
+        // Test batch tag name resolution
+        let tag_names = get_tag_names(service.database(), note.tags())
+            .expect("failed to get tag names");
 
-        // Test tag name resolution
-        let tag_name = get_tag_name(&service, tag_id)
-            .expect("failed to get tag name")
-            .expect("tag should exist");
-
-        assert_eq!(tag_name, "rust", "tag name should match");
+        assert_eq!(tag_names.len(), 2, "should have 2 tags");
+        assert!(tag_names.contains(&"rust".to_string()), "should contain rust");
+        assert!(tag_names.contains(&"programming".to_string()), "should contain programming");
     }
 
     #[test]
-    fn get_tag_name_returns_none_for_non_existent_tag_id() {
+    fn get_tag_names_returns_empty_for_empty_assignments() {
         let db = Database::in_memory().expect("failed to create in-memory database");
-        let service = NoteService::new(db);
 
-        // Query for non-existent tag ID
-        let tag_name = get_tag_name(&service, cons::TagId::new(999))
-            .expect("get_tag_name should not error for non-existent ID");
+        // Query with empty tag assignments
+        let tag_names = get_tag_names(&db, &[])
+            .expect("get_tag_names should not error for empty assignments");
 
-        assert_eq!(tag_name, None, "should return None for non-existent tag ID");
+        assert!(tag_names.is_empty(), "should return empty vec for empty assignments");
     }
 
     #[test]
@@ -485,14 +516,11 @@ mod tests {
             .expect("failed to create note");
 
         // Collect tag names in hashtag format (simulating execute_list behavior)
-        let mut tag_names = Vec::new();
-        for tag_assignment in note.tags() {
-            if let Some(tag_name) =
-                get_tag_name(&service, tag_assignment.tag_id()).expect("failed to get tag name")
-            {
-                tag_names.push(format!("#{}", tag_name));
-            }
-        }
+        let tag_names: Vec<String> = get_tag_names(service.database(), note.tags())
+            .expect("failed to get tag names")
+            .into_iter()
+            .map(|name| format!("#{}", name))
+            .collect();
 
         // Verify all tags are present in hashtag format
         assert_eq!(tag_names.len(), 3, "should have 3 tags");
