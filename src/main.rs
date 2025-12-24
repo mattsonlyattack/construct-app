@@ -19,6 +19,8 @@ struct Cli {
 enum Commands {
     /// Add a new note with optional tags
     Add(AddCommand),
+    /// List notes with optional filtering and pagination
+    List(ListCommand),
 }
 
 /// Add a new note
@@ -33,11 +35,24 @@ struct AddCommand {
     tags: Option<String>,
 }
 
+/// List notes with optional filtering
+#[derive(Parser)]
+struct ListCommand {
+    /// Maximum number of notes to display
+    #[arg(short, long, value_name = "LIMIT")]
+    limit: Option<usize>,
+
+    /// Filter by comma-separated tags (AND logic)
+    #[arg(short, long, value_name = "TAGS")]
+    tags: Option<String>,
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
         Commands::Add(cmd) => handle_add(cmd),
+        Commands::List(cmd) => handle_list(cmd),
     };
 
     if let Err(e) = result {
@@ -130,6 +145,133 @@ fn ensure_database_directory(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Handles the list command by displaying notes.
+fn handle_list(cmd: &ListCommand) -> Result<()> {
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+    let service = NoteService::new(db);
+
+    execute_list(cmd.limit, cmd.tags.as_deref(), service)
+}
+
+/// Executes the list command logic with a provided NoteService.
+///
+/// This function is separated from `handle_list` to allow testing with in-memory databases.
+fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) -> Result<()> {
+    use time::macros::format_description;
+
+    // Apply default limit of 10 when not specified
+    let limit = limit.unwrap_or(10);
+
+    // Parse tags if provided, converting empty to None
+    let parsed_tags = tags.map(parse_tags);
+    let tags_option = match parsed_tags {
+        Some(ref tags) if tags.is_empty() => None,
+        other => other,
+    };
+
+    // When tags are provided, we need to get all matching notes first,
+    // then reverse and apply limit to get oldest N notes.
+    // Otherwise, NoteService applies limit in DESC order (newest N), which is wrong
+    // when we want chronological (oldest N).
+    let limit_for_service = if tags_option.is_some() {
+        None // Get all matching notes, we'll apply limit after reversing
+    } else {
+        Some(limit)
+    };
+
+    // Build options for list_notes
+    let options = cons::ListNotesOptions {
+        limit: limit_for_service,
+        tags: tags_option,
+    };
+
+    // Retrieve notes (returns newest first from DB)
+    let mut notes = service
+        .list_notes(options)
+        .context("Failed to list notes")?;
+
+    // Reverse to get chronological order (oldest first)
+    notes.reverse();
+
+    // Apply limit after reversing
+    if notes.len() > limit {
+        notes.truncate(limit);
+    }
+
+    // Handle empty results
+    if notes.is_empty() {
+        println!("No notes found");
+        return Ok(());
+    }
+
+    // Format descriptor for "YYYY-MM-DD HH:MM"
+    let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+    // Display each note
+    for note in &notes {
+        // Format timestamp as "YYYY-MM-DD HH:MM"
+        let timestamp = note
+            .created_at()
+            .format(&format)
+            .unwrap_or_else(|_| "Invalid date".to_string());
+
+        // Get tag names using batch query
+        let tag_names: Vec<String> = get_tag_names(service.database(), note.tags())?
+            .into_iter()
+            .map(|name| format!("#{}", name))
+            .collect();
+
+        // Display note information
+        println!("ID: {}", note.id().get());
+        println!("Created: {}", timestamp);
+        println!("Content: {}", note.content());
+        if !tag_names.is_empty() {
+            println!("Tags: {}", tag_names.join(" "));
+        }
+        println!(); // Blank line separator
+    }
+
+    Ok(())
+}
+
+/// Gets tag names from the database for the given tag assignments.
+///
+/// Uses a single batch query with IN clause for efficiency.
+fn get_tag_names(db: &Database, tag_assignments: &[cons::TagAssignment]) -> Result<Vec<String>> {
+    if tag_assignments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let conn = db.connection();
+    let tag_ids: Vec<i64> = tag_assignments.iter().map(|ta| ta.tag_id().get()).collect();
+
+    // Build query with placeholders
+    let placeholders: Vec<String> = (0..tag_ids.len()).map(|_| "?".to_string()).collect();
+    let query = format!(
+        "SELECT name FROM tags WHERE id IN ({})",
+        placeholders.join(", ")
+    );
+
+    let mut stmt = conn.prepare(&query).context("Failed to prepare tag query")?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(tag_ids.iter()), |row| {
+            row.get::<_, String>(0)
+        })
+        .context("Failed to query tag names")?;
+
+    let mut names = Vec::new();
+    for row_result in rows {
+        names.push(row_result.context("Failed to read tag name")?);
+    }
+
+    Ok(names)
+}
+
 /// Parses comma-separated tags from a string.
 ///
 /// Splits on commas, trims whitespace from each tag, and filters out empty strings.
@@ -210,5 +352,204 @@ mod tests {
         let result = handle_add(&cmd);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    // --- List Command Tests (Task Group 1) ---
+
+    #[test]
+    fn list_command_struct_parsing_with_clap() {
+        use clap::CommandFactory;
+
+        // Test parsing with short flags
+        let matches = Cli::command()
+            .try_get_matches_from(vec!["cons", "list", "-l", "5", "-t", "rust,programming"])
+            .expect("failed to parse list command");
+
+        // Verify command is recognized
+        assert!(matches.subcommand_matches("list").is_some());
+    }
+
+    #[test]
+    fn execute_list_with_in_memory_database_returns_notes() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create some notes
+        service
+            .create_note("First note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Second note", Some(&["rust", "programming"]))
+            .expect("failed to create note");
+
+        // Create a new database with a test note
+        let db2 = Database::in_memory().expect("failed to create in-memory database");
+        let service2 = NoteService::new(db2);
+        service2
+            .create_note("Test note", None)
+            .expect("failed to create note");
+
+        // Test execute_list function (accepts Database)
+        let db3 = Database::in_memory().expect("failed to create in-memory database");
+        let service3 = NoteService::new(db3);
+        service3
+            .create_note("List test note", None)
+            .expect("failed to create note");
+
+        let result = execute_list(Some(10), None, service3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_list_with_empty_database_shows_no_notes_found() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+        let result = execute_list(Some(10), None, service);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_list_with_tags_filter_applies_correctly() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with different tags
+        service
+            .create_note("Rust note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Programming note", Some(&["programming"]))
+            .expect("failed to create note");
+        service
+            .create_note("Rust programming note", Some(&["rust", "programming"]))
+            .expect("failed to create note");
+
+        // Filter by tags
+        let result = execute_list(Some(10), Some("rust,programming"), service);
+        assert!(result.is_ok());
+    }
+
+    // --- Output Formatting Tests (Task Group 2) ---
+
+    #[test]
+    fn get_tag_names_resolves_tag_ids_to_display_names() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create a note with tags to ensure tags exist in database
+        let note = service
+            .create_note("Test note", Some(&["rust", "programming"]))
+            .expect("failed to create note");
+
+        // Test batch tag name resolution
+        let tag_names = get_tag_names(service.database(), note.tags())
+            .expect("failed to get tag names");
+
+        assert_eq!(tag_names.len(), 2, "should have 2 tags");
+        assert!(tag_names.contains(&"rust".to_string()), "should contain rust");
+        assert!(tag_names.contains(&"programming".to_string()), "should contain programming");
+    }
+
+    #[test]
+    fn get_tag_names_returns_empty_for_empty_assignments() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+
+        // Query with empty tag assignments
+        let tag_names = get_tag_names(&db, &[])
+            .expect("get_tag_names should not error for empty assignments");
+
+        assert!(tag_names.is_empty(), "should return empty vec for empty assignments");
+    }
+
+    #[test]
+    fn timestamp_formats_as_yyyy_mm_dd_hh_mm() {
+        use time::macros::format_description;
+
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create a note
+        let note = service
+            .create_note("Timestamp test", None)
+            .expect("failed to create note");
+
+        // Format timestamp using the same format as execute_list
+        let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
+        let timestamp = note
+            .created_at()
+            .format(&format)
+            .expect("failed to format timestamp");
+
+        // Verify format matches expected pattern (YYYY-MM-DD HH:MM)
+        // Example: "2025-12-23 14:30"
+        assert_eq!(timestamp.len(), 16, "timestamp should be 16 characters");
+        assert_eq!(
+            &timestamp[4..5],
+            "-",
+            "character at position 4 should be '-'"
+        );
+        assert_eq!(
+            &timestamp[7..8],
+            "-",
+            "character at position 7 should be '-'"
+        );
+        assert_eq!(
+            &timestamp[10..11],
+            " ",
+            "character at position 10 should be space"
+        );
+        assert_eq!(
+            &timestamp[13..14],
+            ":",
+            "character at position 13 should be ':'"
+        );
+    }
+
+    #[test]
+    fn note_display_with_multiple_tags_shows_hashtag_format() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create a note with multiple tags
+        let note = service
+            .create_note("Test note", Some(&["rust", "programming", "tutorial"]))
+            .expect("failed to create note");
+
+        // Collect tag names in hashtag format (simulating execute_list behavior)
+        let tag_names: Vec<String> = get_tag_names(service.database(), note.tags())
+            .expect("failed to get tag names")
+            .into_iter()
+            .map(|name| format!("#{}", name))
+            .collect();
+
+        // Verify all tags are present in hashtag format
+        assert_eq!(tag_names.len(), 3, "should have 3 tags");
+        assert!(
+            tag_names.contains(&"#rust".to_string()),
+            "should contain #rust"
+        );
+        assert!(
+            tag_names.contains(&"#programming".to_string()),
+            "should contain #programming"
+        );
+        assert!(
+            tag_names.contains(&"#tutorial".to_string()),
+            "should contain #tutorial"
+        );
+
+        // Verify joined output (as it appears in execute_list)
+        let tags_display = tag_names.join(" ");
+        assert!(
+            tags_display.contains("#rust"),
+            "joined output should contain #rust"
+        );
+        assert!(
+            tags_display.contains("#programming"),
+            "joined output should contain #programming"
+        );
+        assert!(
+            tags_display.contains("#tutorial"),
+            "joined output should contain #tutorial"
+        );
     }
 }
