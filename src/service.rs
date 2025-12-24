@@ -412,8 +412,8 @@ impl NoteService {
 
     /// Lists notes with optional filtering and pagination.
     ///
-    /// Returns notes ordered by creation time (newest first) with optional
-    /// filtering by tags and limiting of results.
+    /// Returns notes ordered by creation time (order controlled by `ListNotesOptions::order`)
+    /// with optional filtering by tags and limiting of results.
     ///
     /// # Arguments
     ///
@@ -466,6 +466,15 @@ impl NoteService {
                 let placeholders: Vec<&str> = tag_names.iter().map(|_| "?").collect();
                 let in_clause = placeholders.join(", ");
 
+                let order_clause = match options.order {
+                    SortOrder::Ascending => "ASC",
+                    SortOrder::Descending => "DESC",
+                };
+                let limit_clause = if let Some(limit) = options.limit {
+                    format!(" LIMIT {}", limit)
+                } else {
+                    String::new()
+                };
                 let query = format!(
                     "SELECT DISTINCT n.id
                      FROM notes n
@@ -474,8 +483,8 @@ impl NoteService {
                      WHERE t.name IN ({}) COLLATE NOCASE
                      GROUP BY n.id
                      HAVING COUNT(DISTINCT t.id) = ?
-                     ORDER BY n.created_at DESC",
-                    in_clause
+                     ORDER BY n.created_at {}{}",
+                    in_clause, order_clause, limit_clause
                 );
 
                 let mut stmt = conn.prepare(&query)?;
@@ -496,22 +505,21 @@ impl NoteService {
                     ids.push(row_result?);
                 }
 
-                // Apply limit if specified
-                if let Some(limit) = options.limit {
-                    ids.truncate(limit);
-                }
-
                 ids
             }
         } else {
             // No tag filtering - get all notes
+            let order_clause = match options.order {
+                SortOrder::Ascending => "ASC",
+                SortOrder::Descending => "DESC",
+            };
             let query = if let Some(limit) = options.limit {
                 format!(
-                    "SELECT id FROM notes ORDER BY created_at DESC LIMIT {}",
-                    limit
+                    "SELECT id FROM notes ORDER BY created_at {} LIMIT {}",
+                    order_clause, limit
                 )
             } else {
-                "SELECT id FROM notes ORDER BY created_at DESC".to_string()
+                format!("SELECT id FROM notes ORDER BY created_at {}", order_clause)
             };
 
             let mut stmt = conn.prepare(&query)?;
@@ -537,6 +545,21 @@ impl NoteService {
     }
 }
 
+/// Sort order for listing notes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortOrder {
+    /// Oldest notes first (ascending by creation time)
+    Ascending,
+    /// Newest notes first (descending by creation time)
+    Descending,
+}
+
+impl Default for SortOrder {
+    fn default() -> Self {
+        SortOrder::Descending
+    }
+}
+
 /// Options for listing notes.
 ///
 /// Provides flexible filtering and pagination for note queries.
@@ -547,7 +570,7 @@ impl NoteService {
 /// ```
 /// use cons::ListNotesOptions;
 ///
-/// // Use defaults (no limit, no tag filtering)
+/// // Use defaults (no limit, no tag filtering, newest first)
 /// let options = ListNotesOptions::default();
 ///
 /// // Limit to 10 most recent notes
@@ -562,7 +585,7 @@ impl NoteService {
 ///     ..Default::default()
 /// };
 /// ```
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ListNotesOptions {
     /// Maximum number of notes to return. None means no limit.
     pub limit: Option<usize>,
@@ -570,6 +593,19 @@ pub struct ListNotesOptions {
     /// Filter notes by these tags. None means no tag filtering.
     /// When specified, returns notes that have ALL of the given tags.
     pub tags: Option<Vec<String>>,
+
+    /// Sort order for notes. Defaults to Descending (newest first).
+    pub order: SortOrder,
+}
+
+impl Default for ListNotesOptions {
+    fn default() -> Self {
+        Self {
+            limit: None,
+            tags: None,
+            order: SortOrder::Descending,
+        }
+    }
 }
 
 #[cfg(test)]

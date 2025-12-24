@@ -22,10 +22,12 @@ fn list_notes(
             .collect::<Vec<String>>()
     });
 
-    // Build options for list_notes
+    // Build options for list_notes - use Descending to get newest N notes
+    use cons::SortOrder;
     let options = ListNotesOptions {
         limit: Some(limit),
         tags: parsed_tags,
+        order: SortOrder::Descending,
     };
 
     // Retrieve notes

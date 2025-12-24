@@ -6,7 +6,7 @@ pub mod service;
 pub use db::Database;
 pub use models::{Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
 pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
-pub use service::{ListNotesOptions, NoteService};
+pub use service::{ListNotesOptions, NoteService, SortOrder};
 
 #[cfg(test)]
 mod tests {
