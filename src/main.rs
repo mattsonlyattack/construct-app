@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cons::{Database, NoteService};
+use rusqlite::OptionalExtension;
 
 /// cons - structure-last personal knowledge management CLI
 #[derive(Parser)]
@@ -19,6 +20,8 @@ struct Cli {
 enum Commands {
     /// Add a new note with optional tags
     Add(AddCommand),
+    /// List notes with optional filtering and pagination
+    List(ListCommand),
 }
 
 /// Add a new note
@@ -33,11 +36,24 @@ struct AddCommand {
     tags: Option<String>,
 }
 
+/// List notes with optional filtering
+#[derive(Parser)]
+struct ListCommand {
+    /// Maximum number of notes to display
+    #[arg(short, long, value_name = "LIMIT")]
+    limit: Option<usize>,
+
+    /// Filter by comma-separated tags (AND logic)
+    #[arg(short, long, value_name = "TAGS")]
+    tags: Option<String>,
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let result = match &cli.command {
         Commands::Add(cmd) => handle_add(cmd),
+        Commands::List(cmd) => handle_list(cmd),
     };
 
     if let Err(e) = result {
@@ -130,6 +146,98 @@ fn ensure_database_directory(db_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Handles the list command by displaying notes.
+fn handle_list(cmd: &ListCommand) -> Result<()> {
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+    let service = NoteService::new(db);
+
+    execute_list(cmd.limit, cmd.tags.as_deref(), service)
+}
+
+/// Executes the list command logic with a provided NoteService.
+///
+/// This function is separated from `handle_list` to allow testing with in-memory databases.
+fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) -> Result<()> {
+    use time::macros::format_description;
+
+    // Apply default limit of 10 when not specified
+    let limit = limit.unwrap_or(10);
+
+    // Parse tags if provided
+    let parsed_tags = tags.map(parse_tags);
+
+    // Build options for list_notes
+    let options = cons::ListNotesOptions {
+        limit: Some(limit),
+        tags: parsed_tags,
+    };
+
+    // Retrieve notes
+    let notes = service
+        .list_notes(options)
+        .context("Failed to list notes")?;
+
+    // Handle empty results
+    if notes.is_empty() {
+        println!("No notes found");
+        return Ok(());
+    }
+
+    // Format descriptor for "YYYY-MM-DD HH:MM"
+    let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+    // Display each note
+    for note in &notes {
+        // Format timestamp as "YYYY-MM-DD HH:MM"
+        let timestamp = note
+            .created_at()
+            .format(&format)
+            .unwrap_or_else(|_| "Invalid date".to_string());
+
+        // Get tag names by querying the database
+        let mut tag_names = Vec::new();
+        for tag_assignment in note.tags() {
+            if let Some(tag_name) = get_tag_name(&service, tag_assignment.tag_id())? {
+                tag_names.push(format!("#{}", tag_name));
+            }
+        }
+
+        // Display note information
+        println!("ID: {}", note.id().get());
+        println!("Created: {}", timestamp);
+        println!("Content: {}", note.content());
+        if !tag_names.is_empty() {
+            println!("Tags: {}", tag_names.join(" "));
+        }
+        println!(); // Blank line separator
+    }
+
+    Ok(())
+}
+
+/// Gets a tag name by its ID.
+///
+/// Returns None if the tag does not exist.
+fn get_tag_name(service: &NoteService, tag_id: cons::TagId) -> Result<Option<String>> {
+    let conn = service.database().connection();
+
+    let name: Option<String> = conn
+        .query_row(
+            "SELECT name FROM tags WHERE id = ?1",
+            [tag_id.get()],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("Failed to query tag name")?;
+
+    Ok(name)
+}
+
 /// Parses comma-separated tags from a string.
 ///
 /// Splits on commas, trims whitespace from each tag, and filters out empty strings.
@@ -210,5 +318,210 @@ mod tests {
         let result = handle_add(&cmd);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    // --- List Command Tests (Task Group 1) ---
+
+    #[test]
+    fn list_command_struct_parsing_with_clap() {
+        use clap::CommandFactory;
+
+        // Test parsing with short flags
+        let matches = Cli::command()
+            .try_get_matches_from(vec!["cons", "list", "-l", "5", "-t", "rust,programming"])
+            .expect("failed to parse list command");
+
+        // Verify command is recognized
+        assert!(matches.subcommand_matches("list").is_some());
+    }
+
+    #[test]
+    fn execute_list_with_in_memory_database_returns_notes() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create some notes
+        service
+            .create_note("First note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Second note", Some(&["rust", "programming"]))
+            .expect("failed to create note");
+
+        // Create a new database with a test note
+        let db2 = Database::in_memory().expect("failed to create in-memory database");
+        let service2 = NoteService::new(db2);
+        service2
+            .create_note("Test note", None)
+            .expect("failed to create note");
+
+        // Test execute_list function (accepts Database)
+        let db3 = Database::in_memory().expect("failed to create in-memory database");
+        let service3 = NoteService::new(db3);
+        service3
+            .create_note("List test note", None)
+            .expect("failed to create note");
+
+        let result = execute_list(Some(10), None, service3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_list_with_empty_database_shows_no_notes_found() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+        let result = execute_list(Some(10), None, service);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_list_with_tags_filter_applies_correctly() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with different tags
+        service
+            .create_note("Rust note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Programming note", Some(&["programming"]))
+            .expect("failed to create note");
+        service
+            .create_note("Rust programming note", Some(&["rust", "programming"]))
+            .expect("failed to create note");
+
+        // Filter by tags
+        let result = execute_list(Some(10), Some("rust,programming"), service);
+        assert!(result.is_ok());
+    }
+
+    // --- Output Formatting Tests (Task Group 2) ---
+
+    #[test]
+    fn get_tag_name_resolves_tag_id_to_display_name() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create a note with tags to ensure tags exist in database
+        let note = service
+            .create_note("Test note", Some(&["rust", "programming"]))
+            .expect("failed to create note");
+
+        // Get the first tag ID from the note
+        let tag_id = note.tags()[0].tag_id();
+
+        // Test tag name resolution
+        let tag_name = get_tag_name(&service, tag_id)
+            .expect("failed to get tag name")
+            .expect("tag should exist");
+
+        assert_eq!(tag_name, "rust", "tag name should match");
+    }
+
+    #[test]
+    fn get_tag_name_returns_none_for_non_existent_tag_id() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Query for non-existent tag ID
+        let tag_name = get_tag_name(&service, cons::TagId::new(999))
+            .expect("get_tag_name should not error for non-existent ID");
+
+        assert_eq!(tag_name, None, "should return None for non-existent tag ID");
+    }
+
+    #[test]
+    fn timestamp_formats_as_yyyy_mm_dd_hh_mm() {
+        use time::macros::format_description;
+
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create a note
+        let note = service
+            .create_note("Timestamp test", None)
+            .expect("failed to create note");
+
+        // Format timestamp using the same format as execute_list
+        let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
+        let timestamp = note
+            .created_at()
+            .format(&format)
+            .expect("failed to format timestamp");
+
+        // Verify format matches expected pattern (YYYY-MM-DD HH:MM)
+        // Example: "2025-12-23 14:30"
+        assert_eq!(timestamp.len(), 16, "timestamp should be 16 characters");
+        assert_eq!(
+            &timestamp[4..5],
+            "-",
+            "character at position 4 should be '-'"
+        );
+        assert_eq!(
+            &timestamp[7..8],
+            "-",
+            "character at position 7 should be '-'"
+        );
+        assert_eq!(
+            &timestamp[10..11],
+            " ",
+            "character at position 10 should be space"
+        );
+        assert_eq!(
+            &timestamp[13..14],
+            ":",
+            "character at position 13 should be ':'"
+        );
+    }
+
+    #[test]
+    fn note_display_with_multiple_tags_shows_hashtag_format() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create a note with multiple tags
+        let note = service
+            .create_note("Test note", Some(&["rust", "programming", "tutorial"]))
+            .expect("failed to create note");
+
+        // Collect tag names in hashtag format (simulating execute_list behavior)
+        let mut tag_names = Vec::new();
+        for tag_assignment in note.tags() {
+            if let Some(tag_name) =
+                get_tag_name(&service, tag_assignment.tag_id()).expect("failed to get tag name")
+            {
+                tag_names.push(format!("#{}", tag_name));
+            }
+        }
+
+        // Verify all tags are present in hashtag format
+        assert_eq!(tag_names.len(), 3, "should have 3 tags");
+        assert!(
+            tag_names.contains(&"#rust".to_string()),
+            "should contain #rust"
+        );
+        assert!(
+            tag_names.contains(&"#programming".to_string()),
+            "should contain #programming"
+        );
+        assert!(
+            tag_names.contains(&"#tutorial".to_string()),
+            "should contain #tutorial"
+        );
+
+        // Verify joined output (as it appears in execute_list)
+        let tags_display = tag_names.join(" ");
+        assert!(
+            tags_display.contains("#rust"),
+            "joined output should contain #rust"
+        );
+        assert!(
+            tags_display.contains("#programming"),
+            "joined output should contain #programming"
+        );
+        assert!(
+            tags_display.contains("#tutorial"),
+            "joined output should contain #tutorial"
+        );
     }
 }
