@@ -12,9 +12,10 @@ serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
 thiserror = "1.0"
 async-trait = "0.1"
+dotenvy = "0.15"
 
 [dev-dependencies]
 tempfile = "3.10"

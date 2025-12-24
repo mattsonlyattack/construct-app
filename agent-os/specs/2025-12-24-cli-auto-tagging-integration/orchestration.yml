@@ -1,0 +1,18 @@
+task_groups:
+  - name: Async Runtime Conversion
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: OLLAMA_MODEL Environment Variable Support
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Background Auto-Tagging Task
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review & Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+

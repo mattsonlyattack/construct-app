@@ -51,6 +51,7 @@ pub enum OllamaError {
 #[derive(Debug, Default)]
 pub struct OllamaClientBuilder {
     base_url: Option<String>,
+    model: Option<String>,
 }
 
 impl OllamaClientBuilder {
@@ -69,6 +70,16 @@ impl OllamaClientBuilder {
         self
     }
 
+    /// Sets the model name for Ollama API calls.
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - The model name (e.g., "gemma3:4b" or "deepseek-r1:8b")
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
     /// Builds the `OllamaClient` with the configured settings.
     ///
     /// # Returns
@@ -80,12 +91,22 @@ impl OllamaClientBuilder {
     ///
     /// If `base_url()` was not called, this method will check the `OLLAMA_HOST`
     /// environment variable. If not set, it defaults to `http://172.17.64.1:11434`.
+    ///
+    /// If `model()` was not called, this method will check the `OLLAMA_MODEL`
+    /// environment variable. If not set, it defaults to an empty string.
     pub fn build(self) -> Result<OllamaClient, OllamaError> {
         // Determine base URL: use builder value, then env var, then default
         let base_url = if let Some(url) = self.base_url {
             url
         } else {
             std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://172.17.64.1:11434".to_string())
+        };
+
+        // Determine model: use builder value, then env var, then default
+        let model = if let Some(m) = self.model {
+            m
+        } else {
+            std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| String::new())
         };
 
         // Validate URL
@@ -99,7 +120,11 @@ impl OllamaClientBuilder {
             .build()
             .map_err(OllamaError::Network)?;
 
-        Ok(OllamaClient { client, base_url })
+        Ok(OllamaClient {
+            client,
+            base_url,
+            model,
+        })
     }
 }
 
@@ -110,6 +135,7 @@ impl OllamaClientBuilder {
 pub struct OllamaClient {
     client: reqwest::Client,
     base_url: String,
+    model: String,
 }
 
 /// Trait for Ollama API client operations.
@@ -135,6 +161,11 @@ impl OllamaClient {
     /// Returns the base URL configured for this client.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Returns the model name configured for this client.
+    pub fn model(&self) -> &str {
+        &self.model
     }
 
     /// Generates text using the Ollama API.
@@ -352,6 +383,7 @@ mod tests {
         let builder = OllamaClientBuilder::new();
         // Builder should be created successfully
         assert!(matches!(builder.base_url, None));
+        assert!(matches!(builder.model, None));
     }
 
     #[test]
@@ -727,5 +759,59 @@ mod tests {
         assert!(result.is_ok());
         // Verify that the error was retried (attempts > 1)
         assert!(attempts.load(Ordering::SeqCst) > 1);
+    }
+
+    // --- OLLAMA_MODEL Environment Variable Support Tests (Task Group 2) ---
+
+    #[test]
+    fn build_reads_ollama_model_environment_variable_if_set() {
+        // Set environment variable
+        unsafe {
+            std::env::set_var("OLLAMA_MODEL", "gemma3:4b");
+        }
+
+        let client = OllamaClientBuilder::new().build();
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        assert_eq!(client.model(), "gemma3:4b");
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("OLLAMA_MODEL");
+        }
+    }
+
+    #[test]
+    fn build_uses_default_model_when_ollama_model_not_set() {
+        // Clear any existing OLLAMA_MODEL env var for this test
+        unsafe {
+            std::env::remove_var("OLLAMA_MODEL");
+        }
+
+        let client = OllamaClientBuilder::new().build();
+        assert!(client.is_ok());
+        let client = client.unwrap();
+        // Default should be empty string when env var not set
+        assert_eq!(client.model(), "");
+    }
+
+    #[test]
+    fn model_method_sets_custom_model_and_takes_precedence_over_env_var() {
+        // Set environment variable
+        unsafe {
+            std::env::set_var("OLLAMA_MODEL", "env-model");
+        }
+
+        // Builder method should override env var
+        let client = OllamaClientBuilder::new()
+            .model("builder-model")
+            .build()
+            .unwrap();
+        assert_eq!(client.model(), "builder-model");
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("OLLAMA_MODEL");
+        }
     }
 }
