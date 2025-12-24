@@ -1,9 +1,11 @@
 pub mod db;
 pub mod models;
+pub mod ollama;
 pub mod service;
 
 pub use db::Database;
 pub use models::{Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
+pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
 pub use service::{ListNotesOptions, NoteService};
 
 #[cfg(test)]

@@ -1,0 +1,26 @@
+task_groups:
+  - name: Dependencies Setup
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Custom Error Types
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Client Builder and Struct
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Exponential Backoff Retry Implementation
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Trait Interface and Generate Endpoint
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+
