@@ -156,7 +156,7 @@ impl OllamaClient {
                 // Add stream: false to get a single JSON response instead of streaming
                 let mut body_with_stream = body.clone();
                 body_with_stream["stream"] = serde_json::json!(false);
-                
+
                 let response = client
                     .post(&url)
                     .json(&body_with_stream)

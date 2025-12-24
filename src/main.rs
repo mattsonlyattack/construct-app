@@ -174,32 +174,22 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
         other => other,
     };
 
-    // Build ListNotesOptions with DESC ordering when limit is specified
-    // to get the N newest notes, then reverse for chronological display
-    use cons::SortOrder;
-    let order = if cmd.limit.is_some() {
-        // When limit is specified, get newest N notes, then reverse for display
-        SortOrder::Descending
-    } else {
-        // When no limit, get all notes oldest-first
-        SortOrder::Ascending
-    };
-
+    // Use DESC ordering to get the newest N notes, then reverse for chronological display
+    // (oldest first, newest last within the result set)
+    use cons::{ListNotesOptions, SortOrder};
     let options = ListNotesOptions {
-        limit: cmd.limit,
+        limit: Some(limit),
         tags: tags_option,
-        order,
+        order: SortOrder::Descending,
     };
 
-    // Fetch notes (DESC if limit specified, ASC otherwise)
+    // Fetch newest N notes
     let mut notes = service
         .list_notes(options)
         .context("Failed to list notes")?;
 
-    // Reverse if we used DESC ordering (to display oldest-first)
-    if cmd.limit.is_some() {
-        notes.reverse();
-    }
+    // Reverse to display oldest-first (newest last)
+    notes.reverse();
 
     // Handle empty results
     if notes.is_empty() {

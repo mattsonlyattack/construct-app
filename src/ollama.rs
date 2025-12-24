@@ -5,4 +5,3 @@
 mod client;
 
 pub use client::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
-

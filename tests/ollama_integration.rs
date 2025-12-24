@@ -41,25 +41,20 @@ async fn generate_with_real_ollama_instance() {
         // Try to detect available models by checking Ollama's /api/tags endpoint
         let base_url = client.base_url();
         let tags_url = format!("{}/api/tags", base_url);
-        
-        let response = reqwest::get(&tags_url)
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "OLLAMA_MODEL not set and could not connect to Ollama at {} to detect models: {}",
-                    base_url, e
-                );
-            });
 
-        let json: serde_json::Value = response
-            .json()
-            .await
-            .unwrap_or_else(|e| {
-                panic!(
-                    "OLLAMA_MODEL not set and could not parse Ollama /api/tags response: {}",
-                    e
-                );
-            });
+        let response = reqwest::get(&tags_url).await.unwrap_or_else(|e| {
+            panic!(
+                "OLLAMA_MODEL not set and could not connect to Ollama at {} to detect models: {}",
+                base_url, e
+            );
+        });
+
+        let json: serde_json::Value = response.json().await.unwrap_or_else(|e| {
+            panic!(
+                "OLLAMA_MODEL not set and could not parse Ollama /api/tags response: {}",
+                e
+            );
+        });
 
         let model_name = json
             .get("models")
@@ -68,9 +63,7 @@ async fn generate_with_real_ollama_instance() {
             .and_then(|model| model.get("name"))
             .and_then(|n| n.as_str())
             .unwrap_or_else(|| {
-                panic!(
-                    "OLLAMA_MODEL not set and could not detect model name from Ollama response"
-                );
+                panic!("OLLAMA_MODEL not set and could not detect model name from Ollama response");
             });
 
         println!("Detected available model: {}", model_name);
@@ -91,7 +84,10 @@ async fn generate_with_real_ollama_instance() {
         });
 
     // Verify we got a non-empty response
-    assert!(!response.is_empty(), "Generated response should not be empty");
+    assert!(
+        !response.is_empty(),
+        "Generated response should not be empty"
+    );
     println!("Successfully generated: {}", response);
 }
 
@@ -109,15 +105,13 @@ async fn generate_handles_missing_ollama_gracefully() {
         .build()
         .expect("Failed to create Ollama client");
 
-    let result = client
-        .generate("test-model", "test prompt")
-        .await;
+    let result = client.generate("test-model", "test prompt").await;
 
     // Should return an error, not panic
     assert!(result.is_err());
     let error = result.unwrap_err();
     let error_msg = format!("{}", error);
-    
+
     // Should be a network error (connection refused) or timeout
     assert!(
         error_msg.contains("Network error") || error_msg.contains("Request timed out"),
@@ -125,4 +119,3 @@ async fn generate_handles_missing_ollama_gracefully() {
         error_msg
     );
 }
-
