@@ -16,7 +16,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 7. [x] Ollama HTTP client -- Build async client for Ollama API using reqwest and tokio, with proper timeout and retry handling `S`
 
-8. [ ] Auto-tagger prompt engineering -- Design and iterate on prompts for deepseek-r1:8b to extract relevant tags from note content with high accuracy `M`
+8. [x] Auto-tagger prompt engineering -- Design and iterate on prompts for deepseek-r1:8b to extract relevant tags from note content with high accuracy `M`
 
 9. [ ] CLI: --auto-tag flag -- Integrate auto-tagging into `cons add` command, calling Ollama asynchronously and updating note tags `S`
 
