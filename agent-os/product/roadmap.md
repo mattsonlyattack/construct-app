@@ -10,7 +10,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 4. [x] CLI: add command -- Implement `cons add "thought"` for instant note capture with optional manual tags via `--tags` flag `S`
 
-5. [ ] CLI: list command -- Implement `cons list` showing recent notes with `--tags` filtering and `--limit` pagination `S`
+5. [x] CLI: list command -- Implement `cons list` showing recent notes with `--tags` filtering and `--limit` pagination `S`
 
 6. [ ] Architecture validation -- Verify layered architecture by confirming NoteService can be used without CLI dependencies, proving reusability for future TUI/GUI `XS`
 
