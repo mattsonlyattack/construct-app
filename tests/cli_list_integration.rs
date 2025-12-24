@@ -10,7 +10,6 @@ fn list_notes(
     tags: Option<&str>,
     service: &NoteService,
 ) -> Result<Vec<(i64, String, Vec<String>)>> {
-
     // Apply default limit of 10 when not specified
     let limit = limit.unwrap_or(10);
 
@@ -72,7 +71,10 @@ fn test_list_full_workflow_with_multiple_notes() -> Result<()> {
     service.create_note("First note about Rust", Some(&["rust", "programming"]))?;
     service.create_note("Second note about learning", Some(&["learning"]))?;
     service.create_note("Third note with no tags", None)?;
-    service.create_note("Fourth note about Rust tutorials", Some(&["rust", "tutorial"]))?;
+    service.create_note(
+        "Fourth note about Rust tutorials",
+        Some(&["rust", "tutorial"]),
+    )?;
 
     // Act: List all notes with default limit
     let results = list_notes(None, None, &service)?;
@@ -129,7 +131,10 @@ fn test_list_tags_filter_applies_correctly() -> Result<()> {
     service.create_note("Rust only", Some(&["rust"]))?;
     service.create_note("Programming only", Some(&["programming"]))?;
     service.create_note("Rust and programming", Some(&["rust", "programming"]))?;
-    service.create_note("Rust, programming, and tutorial", Some(&["rust", "programming", "tutorial"]))?;
+    service.create_note(
+        "Rust, programming, and tutorial",
+        Some(&["rust", "programming", "tutorial"]),
+    )?;
     service.create_note("No tags", None)?;
 
     // Act: Filter by tags "rust,programming" (AND logic - both tags required)
@@ -233,7 +238,10 @@ fn test_list_tags_filter_with_no_matching_notes() -> Result<()> {
     let results = list_notes(Some(10), Some("javascript"), &service)?;
 
     // Assert: No notes returned
-    assert!(results.is_empty(), "should return no notes for non-matching tag");
+    assert!(
+        results.is_empty(),
+        "should return no notes for non-matching tag"
+    );
 
     Ok(())
 }

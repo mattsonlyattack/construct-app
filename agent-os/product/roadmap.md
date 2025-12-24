@@ -12,7 +12,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 5. [x] CLI: list command -- Implement `cons list` showing recent notes with `--tags` filtering and `--limit` pagination `S`
 
-6. [ ] Architecture validation -- Verify layered architecture by confirming NoteService can be used without CLI dependencies, proving reusability for future TUI/GUI `XS`
+6. [x] Architecture validation -- Verify layered architecture by confirming NoteService can be used without CLI dependencies, proving reusability for future TUI/GUI `XS`
 
 7. [ ] Ollama HTTP client -- Build async client for Ollama API using reqwest and tokio, with proper timeout and retry handling `S`
 

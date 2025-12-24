@@ -257,7 +257,9 @@ fn get_tag_names(db: &Database, tag_assignments: &[cons::TagAssignment]) -> Resu
         placeholders.join(", ")
     );
 
-    let mut stmt = conn.prepare(&query).context("Failed to prepare tag query")?;
+    let mut stmt = conn
+        .prepare(&query)
+        .context("Failed to prepare tag query")?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(tag_ids.iter()), |row| {
             row.get::<_, String>(0)
@@ -442,12 +444,18 @@ mod tests {
             .expect("failed to create note");
 
         // Test batch tag name resolution
-        let tag_names = get_tag_names(service.database(), note.tags())
-            .expect("failed to get tag names");
+        let tag_names =
+            get_tag_names(service.database(), note.tags()).expect("failed to get tag names");
 
         assert_eq!(tag_names.len(), 2, "should have 2 tags");
-        assert!(tag_names.contains(&"rust".to_string()), "should contain rust");
-        assert!(tag_names.contains(&"programming".to_string()), "should contain programming");
+        assert!(
+            tag_names.contains(&"rust".to_string()),
+            "should contain rust"
+        );
+        assert!(
+            tag_names.contains(&"programming".to_string()),
+            "should contain programming"
+        );
     }
 
     #[test]
@@ -455,10 +463,13 @@ mod tests {
         let db = Database::in_memory().expect("failed to create in-memory database");
 
         // Query with empty tag assignments
-        let tag_names = get_tag_names(&db, &[])
-            .expect("get_tag_names should not error for empty assignments");
+        let tag_names =
+            get_tag_names(&db, &[]).expect("get_tag_names should not error for empty assignments");
 
-        assert!(tag_names.is_empty(), "should return empty vec for empty assignments");
+        assert!(
+            tag_names.is_empty(),
+            "should return empty vec for empty assignments"
+        );
     }
 
     #[test]
