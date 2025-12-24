@@ -1,0 +1,17 @@
+task_groups:
+  - name: TagNormalizer Module
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: AutoTagger Struct and Prompt Design
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: OllamaClient Integration and Error Handling
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Corpus and Prompt Evaluation
+    claude_code_subagent: rust-engineer
+    standards:
+      - all

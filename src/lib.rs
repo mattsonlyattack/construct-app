@@ -1,8 +1,10 @@
+pub mod autotagger;
 pub mod db;
 pub mod models;
 pub mod ollama;
 pub mod service;
 
+pub use autotagger::{AutoTagger, AutoTaggerBuilder, TagNormalizer};
 pub use db::Database;
 pub use models::{Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
 pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
@@ -37,5 +39,9 @@ mod tests {
             .content("test")
             .build();
         assert_eq!(note.content(), "test");
+
+        // Verify TagNormalizer is accessible from crate root
+        let normalized = TagNormalizer::normalize_tag("Test Tag!");
+        assert_eq!(normalized, "test-tag");
     }
 }

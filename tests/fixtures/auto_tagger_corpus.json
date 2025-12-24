@@ -1,0 +1,43 @@
+[
+  {
+    "content": "Learning async Rust. The tokio runtime makes concurrent programming much easier than manual thread management.",
+    "expected_tags": ["rust", "async", "tokio", "concurrency"],
+    "notes": "Technical note - tests basic tag extraction for programming topics"
+  },
+  {
+    "content": "Debugging a Python script. Used print statements but should switch to proper logging.",
+    "expected_tags": ["debugging", "python", "logging"],
+    "notes": "Aboutness vs mention test - note is ABOUT debugging, Python is just mentioned as the language used"
+  },
+  {
+    "content": "Meeting notes: discussed Q4 roadmap. Need to prioritize authentication feature and database migration.",
+    "expected_tags": ["meeting-notes", "roadmap", "authentication", "database"],
+    "notes": "Business/planning note - tests extraction from structured meeting content"
+  },
+  {
+    "content": "Read an interesting article about machine learning. The author mentioned neural networks and deep learning techniques. Planning to explore this further.",
+    "expected_tags": ["machine-learning", "neural-networks", "deep-learning"],
+    "notes": "Aboutness test - note is ABOUT machine learning, not just mentioning it"
+  },
+  {
+    "content": "Fixed a bug in the authentication system. The issue was related to JWT token expiration handling.",
+    "expected_tags": ["bug-fix", "authentication", "jwt", "tokens"],
+    "notes": "Short technical note - tests concise content extraction"
+  },
+  {
+    "content": "Today I learned about REST API design principles. HTTP methods, status codes, and resource naming conventions are crucial for building maintainable APIs. Also read about GraphQL as an alternative approach.",
+    "expected_tags": ["rest-api", "api-design", "http", "graphql"],
+    "notes": "Longer technical note - tests extraction from paragraph-length content with multiple topics"
+  },
+  {
+    "content": "Personal reflection: Need to improve work-life balance. Too much time spent on coding projects, not enough on hobbies and relationships.",
+    "expected_tags": ["personal", "work-life-balance", "reflection"],
+    "notes": "Personal note - tests non-technical content extraction"
+  },
+  {
+    "content": "Researching database optimization strategies. Indexing, query planning, and connection pooling are key areas. PostgreSQL documentation has been helpful.",
+    "expected_tags": ["database", "optimization", "indexing", "postgresql"],
+    "notes": "Mixed complexity - technical research note with specific technology mention"
+  }
+]
+
