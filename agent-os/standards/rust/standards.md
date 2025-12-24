@@ -11,6 +11,7 @@ Modern Rust guidelines for an AI-first CLI knowledge management tool. Rust 2021 
 - Database and LLM integrations live in dedicated modules, not scattered
 - Binary crates (`src/main.rs`) are thin wrappers around library crates (`src/lib.rs`)
 - Feature flags for optional integrations (e.g., `ollama`, `tui`)
+- **Module organization**: Use the modern Rust 2018+ module pattern—never use `mod.rs` files. Instead, use `module_name.rs` for the module entry point with submodules in `module_name/` directory. For example, use `src/autotagger.rs` (not `src/autotagger/mod.rs`) as the module file.
 
 ## Error Handling
 
