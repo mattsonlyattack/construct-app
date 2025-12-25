@@ -33,7 +33,7 @@ pub struct CorpusEntry {
 /// # Examples
 ///
 /// ```no_run
-/// use cons::autotagger::eval::load_corpus;
+/// use cons::autotagger::load_corpus;
 ///
 /// let entries = load_corpus(None)?;
 /// for entry in entries {
@@ -74,7 +74,7 @@ pub fn load_corpus(
 /// # Examples
 ///
 /// ```
-/// use cons::autotagger::eval::jaccard_similarity;
+/// use cons::autotagger::jaccard_similarity;
 /// use std::collections::HashSet;
 ///
 /// let expected: HashSet<String> = ["rust", "async", "tokio"]
@@ -124,7 +124,7 @@ pub fn jaccard_similarity(expected: &HashSet<String>, actual: &HashSet<String>) 
 /// # Examples
 ///
 /// ```
-/// use cons::autotagger::eval::precision_recall;
+/// use cons::autotagger::precision_recall;
 /// use std::collections::HashSet;
 ///
 /// let expected: HashSet<String> = ["rust", "async", "tokio"]
@@ -270,4 +270,5 @@ mod tests {
         assert!((recall - 0.667).abs() < 0.01); // 2 TP, 1 FN
     }
 }
+
 

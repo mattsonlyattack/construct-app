@@ -12,7 +12,7 @@
 //! use cons::autotagger::AutoTaggerBuilder;
 //! use cons::ollama::OllamaClientBuilder;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Create Ollama client
 //! let client = OllamaClientBuilder::new()
 //!     .base_url("http://localhost:11434")
@@ -23,9 +23,9 @@
 //!     .client(Arc::new(client))
 //!     .build();
 //!
-//! // Generate tags for note content
+//! // Generate tags for note content (synchronous)
 //! let note_content = "Learning async Rust programming with tokio runtime";
-//! let tags = tagger.generate_tags("deepseek-r1:8b", note_content).await?;
+//! let tags = tagger.generate_tags("deepseek-r1:8b", note_content)?;
 //!
 //! // Tags are returned as HashMap<String, f64> where:
 //! // - Key: normalized tag name (e.g., "rust", "async-programming")
@@ -42,12 +42,11 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use cons::autotagger::AutoTaggerBuilder;
-//! use cons::models::{TagSource, TagId};
+//! use cons::models::TagSource;
 //! use cons::ollama::OllamaClientBuilder;
 //! use cons::service::NoteService;
-//! use time::OffsetDateTime;
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Setup
 //! let db = cons::db::Database::in_memory()?;
 //! let service = NoteService::new(db);
@@ -57,20 +56,19 @@
 //!     .client(Arc::new(client))
 //!     .build();
 //!
-//! // Create a note
-//! let note = service.create_note("Learning Rust ownership patterns")?;
+//! // Create a note (second arg is optional tags)
+//! let note = service.create_note("Learning Rust ownership patterns", None)?;
 //!
-//! // Generate tags
-//! let tags = tagger.generate_tags("deepseek-r1:8b", note.content()).await?;
+//! // Generate tags (synchronous)
+//! let tags = tagger.generate_tags("deepseek-r1:8b", note.content())?;
 //!
 //! // Add tags to note with LLM source
 //! for (tag_name, confidence) in tags {
-//!     let tag_id = service.create_tag_if_not_exists(&tag_name)?;
 //!     let tag_source = TagSource::llm(
-//!         "deepseek-r1:8b".to_string(),
+//!         "deepseek-r1:8b",
 //!         (confidence * 100.0) as u8,
 //!     );
-//!     service.add_tags_to_note(note.id(), &[tag_id], tag_source)?;
+//!     service.add_tags_to_note(note.id(), &[tag_name.as_str()], tag_source)?;
 //! }
 //! # Ok(())
 //! # }
