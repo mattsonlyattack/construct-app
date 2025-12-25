@@ -52,7 +52,7 @@ JSON OUTPUT:"#;
 /// use cons::autotagger::AutoTaggerBuilder;
 /// use cons::ollama::{OllamaClientBuilder, OllamaClientTrait};
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = OllamaClientBuilder::new()
 ///     .base_url("http://localhost:11434")
 ///     .build()?;
@@ -61,7 +61,7 @@ JSON OUTPUT:"#;
 ///     .client(Arc::new(client))
 ///     .build();
 ///
-/// let tags = tagger.generate_tags("deepseek-r1:8b", "Learning Rust async programming").await?;
+/// let tags = tagger.generate_tags("deepseek-r1:8b", "Learning Rust async programming")?;
 ///
 /// for (tag, confidence) in tags {
 ///     println!("{}: {:.2}", tag, confidence);
@@ -103,7 +103,7 @@ impl AutoTaggerBuilder {
     /// use cons::autotagger::AutoTaggerBuilder;
     /// use cons::ollama::OllamaClientBuilder;
     ///
-    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = OllamaClientBuilder::new().build()?;
     /// let tagger = AutoTaggerBuilder::new()
     ///     .client(Arc::new(client))
@@ -130,7 +130,7 @@ impl AutoTaggerBuilder {
 /// use cons::autotagger::AutoTaggerBuilder;
 /// use cons::ollama::OllamaClientBuilder;
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// // Create Ollama client
 /// let client = OllamaClientBuilder::new()
 ///     .base_url("http://localhost:11434")
@@ -142,7 +142,7 @@ impl AutoTaggerBuilder {
 ///     .build();
 ///
 /// // Generate tags for note content
-/// let tags = tagger.generate_tags("deepseek-r1:8b", "Learning Rust async programming").await?;
+/// let tags = tagger.generate_tags("deepseek-r1:8b", "Learning Rust async programming")?;
 ///
 /// // Process the tags (HashMap<String, f64>)
 /// for (tag, confidence) in tags {
@@ -159,13 +159,13 @@ impl AutoTaggerBuilder {
 /// use cons::autotagger::AutoTagger;
 /// use cons::ollama::OllamaClientBuilder;
 ///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// # fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = OllamaClientBuilder::new()
 ///     .base_url("http://localhost:11434")
 ///     .build()?;
 ///
 /// let tagger = AutoTagger::new(Arc::new(client));
-/// let tags = tagger.generate_tags("deepseek-r1:8b", "Learning Rust async programming").await?;
+/// let tags = tagger.generate_tags("deepseek-r1:8b", "Learning Rust async programming")?;
 ///
 /// for (tag, confidence) in tags {
 ///     println!("{}: {:.2}", tag, confidence);
@@ -208,7 +208,7 @@ impl AutoTagger {
     ///
     /// Returns `OllamaError` if the LLM request fails (network, timeout, API errors).
     /// JSON parsing errors do not cause failures; they return empty results instead.
-    pub async fn generate_tags(
+    pub fn generate_tags(
         &self,
         model: &str,
         content: &str,
@@ -217,7 +217,7 @@ impl AutoTagger {
         let prompt = PROMPT_TEMPLATE.replace("{content}", content);
 
         // Call LLM
-        let response = self.client.generate(model, &prompt).await?;
+        let response = self.client.generate(model, &prompt)?;
 
         // Extract JSON from response (handles various output formats)
         let Some(json_str) = extract_json(&response) else {
@@ -309,28 +309,27 @@ fn parse_tags(json_str: &str) -> HashMap<String, f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
 
     struct MockOllamaClient {
         response: String,
     }
 
-    #[async_trait]
+    
     impl OllamaClientTrait for MockOllamaClient {
-        async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
+        fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
             Ok(self.response.clone())
         }
     }
 
-    #[tokio::test]
-    async fn test_prompt_construction_includes_note_content() {
+    #[test]
+    fn test_prompt_construction_includes_note_content() {
         let mock = MockOllamaClient {
             response: r#"{"rust": 0.9}"#.to_string(),
         };
         let tagger = AutoTagger::new(Arc::new(mock));
 
         let content = "Learning Rust ownership patterns";
-        let result = tagger.generate_tags("test-model", content).await;
+        let result = tagger.generate_tags("test-model", content);
 
         assert!(result.is_ok());
         // Verify that the prompt would include the content (tested via integration)
@@ -431,27 +430,27 @@ I hope this helps!"#;
         assert!(!tags.contains_key("C++"));
     }
 
-    #[tokio::test]
-    async fn test_generate_tags_returns_empty_on_json_extraction_failure() {
+    #[test]
+    fn test_generate_tags_returns_empty_on_json_extraction_failure() {
         let mock = MockOllamaClient {
             response: "No JSON here, just plain text".to_string(),
         };
         let tagger = AutoTagger::new(Arc::new(mock));
 
-        let result = tagger.generate_tags("test-model", "test content").await;
+        let result = tagger.generate_tags("test-model", "test content");
 
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn test_generate_tags_returns_empty_on_json_parse_failure() {
+    #[test]
+    fn test_generate_tags_returns_empty_on_json_parse_failure() {
         let mock = MockOllamaClient {
             response: r#"{"invalid": "not a number"}"#.to_string(),
         };
         let tagger = AutoTagger::new(Arc::new(mock));
 
-        let result = tagger.generate_tags("test-model", "test content").await;
+        let result = tagger.generate_tags("test-model", "test content");
 
         assert!(result.is_ok());
         let tags = result.unwrap();
@@ -459,19 +458,19 @@ I hope this helps!"#;
         assert!(!tags.contains_key("invalid"));
     }
 
-    #[tokio::test]
-    async fn test_ollama_error_propagates_correctly() {
+    #[test]
+    fn test_ollama_error_propagates_correctly() {
         struct FailingMockClient;
 
-        #[async_trait]
+        
         impl OllamaClientTrait for FailingMockClient {
-            async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
+            fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
                 Err(OllamaError::Http { status: 500 })
             }
         }
 
         let tagger = AutoTagger::new(Arc::new(FailingMockClient));
-        let result = tagger.generate_tags("test-model", "test content").await;
+        let result = tagger.generate_tags("test-model", "test content");
 
         assert!(result.is_err());
         assert!(matches!(
@@ -480,8 +479,8 @@ I hope this helps!"#;
         ));
     }
 
-    #[tokio::test]
-    async fn test_full_workflow_with_mock_client() {
+    #[test]
+    fn test_full_workflow_with_mock_client() {
         let mock = MockOllamaClient {
             response: r#"Based on the content, here are the tags:
 
@@ -496,7 +495,7 @@ These tags represent the main topics."#
 
         let result = tagger
             .generate_tags("test-model", "Learning async Rust with tokio")
-            .await;
+            ;
 
         assert!(result.is_ok());
         let tags = result.unwrap();
@@ -512,8 +511,8 @@ These tags represent the main topics."#
         use super::*;
 
         /// Test AutoTagger works with mock OllamaClient returning valid JSON.
-        #[tokio::test]
-        async fn test_autotagger_integration_with_valid_json_response() {
+        #[test]
+        fn test_autotagger_integration_with_valid_json_response() {
             let mock = MockOllamaClient {
                 response: r#"{"rust": 0.9, "testing": 0.85, "integration": 0.75}"#.to_string(),
             };
@@ -521,7 +520,7 @@ These tags represent the main topics."#
 
             let result = tagger
                 .generate_tags("deepseek-r1:8b", "Writing integration tests for Rust")
-                .await;
+                ;
 
             assert!(result.is_ok());
             let tags = result.unwrap();
@@ -533,13 +532,13 @@ These tags represent the main topics."#
         }
 
         /// Test AutoTagger handles OllamaError gracefully.
-        #[tokio::test]
-        async fn test_autotagger_handles_ollama_error_gracefully() {
+        #[test]
+        fn test_autotagger_handles_ollama_error_gracefully() {
             struct ErrorMockClient;
 
-            #[async_trait]
+            
             impl OllamaClientTrait for ErrorMockClient {
-                async fn generate(
+                fn generate(
                     &self,
                     _model: &str,
                     _prompt: &str,
@@ -554,15 +553,15 @@ These tags represent the main topics."#
             }
 
             let tagger = AutoTagger::new(Arc::new(ErrorMockClient));
-            let result = tagger.generate_tags("test-model", "test content").await;
+            let result = tagger.generate_tags("test-model", "test content");
 
             assert!(result.is_err());
             assert!(matches!(result.unwrap_err(), OllamaError::Network(_)));
         }
 
         /// Test full workflow: content -> prompt -> mock response -> normalized tags.
-        #[tokio::test]
-        async fn test_full_workflow_content_to_normalized_tags() {
+        #[test]
+        fn test_full_workflow_content_to_normalized_tags() {
             // Mock response with various normalization challenges
             let mock = MockOllamaClient {
                 response: r#"Here are the extracted tags:
@@ -577,7 +576,7 @@ I focused on the main topics discussed."#
             let tagger = AutoTagger::new(Arc::new(mock));
 
             let content = "Exploring async Rust for machine learning API design";
-            let result = tagger.generate_tags("gemma3:4b", content).await;
+            let result = tagger.generate_tags("gemma3:4b", content);
 
             assert!(result.is_ok());
             let tags = result.unwrap();
@@ -596,17 +595,17 @@ I focused on the main topics discussed."#
         }
 
         /// Test model name is passed correctly to client.
-        #[tokio::test]
-        async fn test_model_name_passed_to_client() {
+        #[test]
+        fn test_model_name_passed_to_client() {
             use std::sync::Mutex;
 
             struct ModelCapturingMock {
                 captured_model: Mutex<Option<String>>,
             }
 
-            #[async_trait]
+            
             impl OllamaClientTrait for ModelCapturingMock {
-                async fn generate(
+                fn generate(
                     &self,
                     model: &str,
                     _prompt: &str,
@@ -622,7 +621,7 @@ I focused on the main topics discussed."#
             let mock = Arc::new(mock);
             let tagger = AutoTagger::new(mock.clone());
 
-            let result = tagger.generate_tags("deepseek-r1:8b", "test content").await;
+            let result = tagger.generate_tags("deepseek-r1:8b", "test content");
             assert!(result.is_ok());
 
             let captured = mock.captured_model.lock().unwrap();
@@ -630,8 +629,8 @@ I focused on the main topics discussed."#
         }
 
         /// Test AutoTaggerBuilder constructs AutoTagger correctly.
-        #[tokio::test]
-        async fn test_autotagger_builder_construction() {
+        #[test]
+        fn test_autotagger_builder_construction() {
             let mock = MockOllamaClient {
                 response: r#"{"rust": 0.9}"#.to_string(),
             };
@@ -640,7 +639,7 @@ I focused on the main topics discussed."#
                 .client(Arc::new(mock))
                 .build();
 
-            let result = tagger.generate_tags("test-model", "test content").await;
+            let result = tagger.generate_tags("test-model", "test content");
             assert!(result.is_ok());
             let tags = result.unwrap();
             assert_eq!(tags.get("rust"), Some(&0.9));

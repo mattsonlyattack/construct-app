@@ -546,18 +546,13 @@ impl NoteService {
 }
 
 /// Sort order for listing notes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortOrder {
     /// Oldest notes first (ascending by creation time)
     Ascending,
     /// Newest notes first (descending by creation time)
+    #[default]
     Descending,
-}
-
-impl Default for SortOrder {
-    fn default() -> Self {
-        SortOrder::Descending
-    }
 }
 
 /// Options for listing notes.

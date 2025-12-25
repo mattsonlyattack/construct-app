@@ -18,7 +18,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 8. [x] Auto-tagger prompt engineering -- Design and iterate on prompts for deepseek-r1:8b to extract relevant tags from note content with high accuracy `M`
 
-9. [ ] CLI: Integrate auto-tagging into `cons add` command, calling Ollama asynchronously and updating note tags `S`
+9. [x] CLI: Integrate auto-tagging into `cons add` command, calling Ollama asynchronously and updating note tags `S`
 
 10. [ ] Fail-safe error handling -- Ensure LLM failures never block note capture; notes save successfully even if tagging fails, with graceful degradation `S`
 

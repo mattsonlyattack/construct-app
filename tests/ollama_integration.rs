@@ -26,9 +26,9 @@ use cons::{OllamaClientBuilder, OllamaClientTrait};
 /// ```bash
 /// OLLAMA_MODEL=your-model-name cargo test --test ollama_integration -- --ignored
 /// ```
-#[tokio::test]
+#[test]
 #[ignore]
-async fn generate_with_real_ollama_instance() {
+fn generate_with_real_ollama_instance() {
     // Build client using default configuration
     let client = OllamaClientBuilder::new()
         .build()
@@ -42,14 +42,14 @@ async fn generate_with_real_ollama_instance() {
         let base_url = client.base_url();
         let tags_url = format!("{}/api/tags", base_url);
 
-        let response = reqwest::get(&tags_url).await.unwrap_or_else(|e| {
+        let response = reqwest::blocking::get(&tags_url).unwrap_or_else(|e| {
             panic!(
                 "OLLAMA_MODEL not set and could not connect to Ollama at {} to detect models: {}",
                 base_url, e
             );
         });
 
-        let json: serde_json::Value = response.json().await.unwrap_or_else(|e| {
+        let json: serde_json::Value = response.json().unwrap_or_else(|e| {
             panic!(
                 "OLLAMA_MODEL not set and could not parse Ollama /api/tags response: {}",
                 e
@@ -75,7 +75,6 @@ async fn generate_with_real_ollama_instance() {
     // Actually test generation - this should succeed
     let response = client
         .generate(&model, "Say hello in one word.")
-        .await
         .unwrap_or_else(|_| {
             panic!(
                 "Failed to generate text with model '{}'. Ensure Ollama is running and the model is available.",
@@ -95,9 +94,9 @@ async fn generate_with_real_ollama_instance() {
 ///
 /// This test verifies that the client properly handles the case where Ollama
 /// is not available, which is important for fail-safe behavior.
-#[tokio::test]
+#[test]
 #[ignore]
-async fn generate_handles_missing_ollama_gracefully() {
+fn generate_handles_missing_ollama_gracefully() {
     // Use a non-existent host to simulate Ollama not being available
     // Using a valid URL format but a host that won't respond
     let client = OllamaClientBuilder::new()
@@ -105,7 +104,7 @@ async fn generate_handles_missing_ollama_gracefully() {
         .build()
         .expect("Failed to create Ollama client");
 
-    let result = client.generate("test-model", "test prompt").await;
+    let result = client.generate("test-model", "test prompt");
 
     // Should return an error, not panic
     assert!(result.is_err());

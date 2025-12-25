@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use cons::autotagger::AutoTaggerBuilder;
 use cons::ollama::{OllamaClientTrait, OllamaError};
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 /// Test corpus entry structure.
@@ -43,9 +42,8 @@ struct MockOllamaClient {
     response: String,
 }
 
-#[async_trait]
 impl OllamaClientTrait for MockOllamaClient {
-    async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
+    fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
         Ok(self.response.clone())
     }
 }
@@ -92,8 +90,8 @@ fn test_corpus_includes_aboutness_vs_mention_cases() {
     );
 }
 
-#[tokio::test]
-async fn test_tag_extraction_on_sample_with_mock() {
+#[test]
+fn test_tag_extraction_on_sample_with_mock() {
     // Load corpus
     let entries = load_corpus().unwrap();
     let sample = &entries[0]; // Use first entry
@@ -112,7 +110,7 @@ async fn test_tag_extraction_on_sample_with_mock() {
         .build();
 
     // Generate tags
-    let result = tagger.generate_tags("test-model", &sample.content).await;
+    let result = tagger.generate_tags("test-model", &sample.content);
     assert!(result.is_ok(), "Tag generation should succeed");
 
     let tags = result.unwrap();
@@ -140,9 +138,9 @@ async fn test_tag_extraction_on_sample_with_mock() {
 /// ```bash
 /// cargo test --test autotagger_evaluation -- --ignored test_real_ollama_integration
 /// ```
-#[tokio::test]
+#[test]
 #[ignore]
-async fn test_real_ollama_integration() {
+fn test_real_ollama_integration() {
     use cons::ollama::OllamaClientBuilder;
 
     // Create real Ollama client
@@ -165,8 +163,7 @@ async fn test_real_ollama_integration() {
 
     // Try to generate tags (may fail if Ollama is not available)
     let result = tagger
-        .generate_tags("gemma3:4b", &sample.content)
-        .await;
+        .generate_tags("gemma3:4b", &sample.content);
 
     match result {
         Ok(tags) => {

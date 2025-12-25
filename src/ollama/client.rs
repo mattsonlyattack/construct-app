@@ -1,12 +1,11 @@
 /// Ollama HTTP client implementation.
 ///
-/// This module provides `OllamaClient` for making async HTTP requests to the Ollama API,
+/// This module provides `OllamaClient` for making synchronous HTTP requests to the Ollama API,
 /// along with error types and builder patterns for configuration.
+use std::thread;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use thiserror::Error;
-use tokio::time::sleep;
 
 /// Errors that can occur when interacting with the Ollama API.
 #[derive(Debug, Error)]
@@ -113,8 +112,8 @@ impl OllamaClientBuilder {
         reqwest::Url::parse(&base_url)
             .map_err(|e| OllamaError::InvalidUrl(format!("{}: {}", base_url, e)))?;
 
-        // Create reqwest client with timeout configuration
-        let client = reqwest::Client::builder()
+        // Create reqwest blocking client with timeout configuration
+        let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(60))
             .connect_timeout(Duration::from_secs(5))
             .build()
@@ -128,12 +127,12 @@ impl OllamaClientBuilder {
     }
 }
 
-/// Async HTTP client for interacting with the Ollama API.
+/// Synchronous HTTP client for interacting with the Ollama API.
 ///
 /// This client handles HTTP requests to Ollama with proper timeout and retry handling.
 /// It should be constructed using `OllamaClientBuilder`.
 pub struct OllamaClient {
-    client: reqwest::Client,
+    client: reqwest::blocking::Client,
     base_url: String,
     model: String,
 }
@@ -142,7 +141,6 @@ pub struct OllamaClient {
 ///
 /// This trait enables mocking in unit tests and provides a clean interface
 /// for interacting with the Ollama API.
-#[async_trait]
 pub trait OllamaClientTrait: Send + Sync {
     /// Generates text using the Ollama API.
     ///
@@ -154,7 +152,7 @@ pub trait OllamaClientTrait: Send + Sync {
     /// # Returns
     ///
     /// Returns the generated text as a `String`, or an error if the request fails.
-    async fn generate(&self, model: &str, prompt: &str) -> Result<String, OllamaError>;
+    fn generate(&self, model: &str, prompt: &str) -> Result<String, OllamaError>;
 }
 
 impl OllamaClient {
@@ -171,65 +169,54 @@ impl OllamaClient {
     /// Generates text using the Ollama API.
     ///
     /// This is the internal implementation that will be called by the trait method.
-    async fn generate_internal(&self, model: &str, prompt: &str) -> Result<String, OllamaError> {
+    fn generate_internal(&self, model: &str, prompt: &str) -> Result<String, OllamaError> {
         let url = format!("{}/api/generate", self.base_url);
         let request_body = serde_json::json!({
             "model": model,
-            "prompt": prompt
+            "prompt": prompt,
+            "stream": false
         });
 
         // Wrap the HTTP call with retry logic
         retry_with_backoff(|| {
-            let client = &self.client;
-            let url = url.clone();
-            let body = request_body.clone();
-            async move {
-                // Add stream: false to get a single JSON response instead of streaming
-                let mut body_with_stream = body.clone();
-                body_with_stream["stream"] = serde_json::json!(false);
+            let response = self
+                .client
+                .post(&url)
+                .json(&request_body)
+                .send()
+                .map_err(OllamaError::Network)?;
 
-                let response = client
-                    .post(&url)
-                    .json(&body_with_stream)
-                    .send()
-                    .await
-                    .map_err(OllamaError::Network)?;
-
-                let status = response.status();
-                if !status.is_success() {
-                    if status.is_client_error() {
-                        // 4xx errors - don't retry
-                        return Err(OllamaError::Http {
-                            status: status.as_u16(),
-                        });
-                    } else if status.is_server_error() {
-                        // 5xx errors - will be retried
-                        return Err(OllamaError::Http {
-                            status: status.as_u16(),
-                        });
-                    }
+            let status = response.status();
+            if !status.is_success() {
+                if status.is_client_error() {
+                    // 4xx errors - don't retry
+                    return Err(OllamaError::Http {
+                        status: status.as_u16(),
+                    });
+                } else if status.is_server_error() {
+                    // 5xx errors - will be retried
+                    return Err(OllamaError::Http {
+                        status: status.as_u16(),
+                    });
                 }
-
-                let json: serde_json::Value =
-                    response.json().await.map_err(OllamaError::Network)?;
-
-                // Extract the "response" field from Ollama API response
-                json.get("response")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| OllamaError::Api {
-                        message: "Missing 'response' field in API response".to_string(),
-                    })
             }
+
+            let json: serde_json::Value = response.json().map_err(OllamaError::Network)?;
+
+            // Extract the "response" field from Ollama API response
+            json.get("response")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| OllamaError::Api {
+                    message: "Missing 'response' field in API response".to_string(),
+                })
         })
-        .await
     }
 }
 
-#[async_trait]
 impl OllamaClientTrait for OllamaClient {
-    async fn generate(&self, model: &str, prompt: &str) -> Result<String, OllamaError> {
-        self.generate_internal(model, prompt).await
+    fn generate(&self, model: &str, prompt: &str) -> Result<String, OllamaError> {
+        self.generate_internal(model, prompt)
     }
 }
 
@@ -245,16 +232,15 @@ impl OllamaClientTrait for OllamaClient {
 /// # Returns
 ///
 /// Returns the result of the operation if it succeeds, or the last error if all retries fail.
-pub async fn retry_with_backoff<F, Fut, T>(mut f: F) -> Result<T, OllamaError>
+pub fn retry_with_backoff<F, T>(mut f: F) -> Result<T, OllamaError>
 where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T, OllamaError>>,
+    F: FnMut() -> Result<T, OllamaError>,
 {
     const MAX_RETRIES: usize = 3;
     const DELAYS: [u64; MAX_RETRIES] = [1, 2, 4]; // seconds
 
     // Try the operation first
-    let mut last_error = match f().await {
+    let mut last_error = match f() {
         Ok(result) => return Ok(result),
         Err(e) => {
             // Check if we should retry this error
@@ -268,9 +254,9 @@ where
     // Retry up to MAX_RETRIES times
     for &delay_secs in &DELAYS {
         // Sleep before retry (exponential backoff)
-        sleep(Duration::from_secs(delay_secs)).await;
+        thread::sleep(Duration::from_secs(delay_secs));
 
-        match f().await {
+        match f() {
             Ok(result) => return Ok(result),
             Err(e) => {
                 // Check if we should retry this error
@@ -314,7 +300,7 @@ mod tests {
         // Create a network error by building a request with an invalid URL format
         // We'll use reqwest's internal error creation
         // Note: In real usage, this would come from actual network failures
-        let client = reqwest::Client::new();
+        let client = reqwest::blocking::Client::new();
         // Create an error by attempting to use an invalid URL scheme
         // This will give us a reqwest::Error we can use for testing
         let invalid_url = "not-a-valid-url";
@@ -330,7 +316,7 @@ mod tests {
     fn timeout_error_variant_creation_and_display() {
         // Create a timeout error - use the same approach as network error
         // In practice, timeout errors come from timed-out requests
-        let client = reqwest::Client::new();
+        let client = reqwest::blocking::Client::new();
         let invalid_url = "http://";
         let reqwest_error = client.get(invalid_url).build().unwrap_err();
         let ollama_error = OllamaError::Timeout(reqwest_error);
@@ -450,8 +436,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn retry_succeeds_after_transient_network_error() {
+    #[test]
+    fn retry_succeeds_after_transient_network_error() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -459,30 +445,27 @@ mod tests {
         let attempts_clone = attempts.clone();
         let result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                let count = attempts.fetch_add(1, Ordering::SeqCst);
-                if count < 1 {
-                    // Simulate network error on first attempt
-                    Err(OllamaError::Network(
-                        reqwest::Client::new()
-                            .get("not-a-valid-url")
-                            .build()
-                            .unwrap_err(),
-                    ))
-                } else {
-                    Ok("success")
-                }
+            let count = attempts.fetch_add(1, Ordering::SeqCst);
+            if count < 1 {
+                // Simulate network error on first attempt
+                Err(OllamaError::Network(
+                    reqwest::blocking::Client::new()
+                        .get("not-a-valid-url")
+                        .build()
+                        .unwrap_err(),
+                ))
+            } else {
+                Ok("success")
             }
-        })
-        .await;
+        });
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
-    async fn retry_stops_after_3_attempts() {
+    #[test]
+    fn retry_stops_after_3_attempts() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -490,26 +473,23 @@ mod tests {
         let attempts_clone = attempts.clone();
         let result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                // Always fail with retryable error
-                Err(OllamaError::Network(
-                    reqwest::Client::new()
-                        .get("not-a-valid-url")
-                        .build()
-                        .unwrap_err(),
-                ))
-            }
-        })
-        .await;
+            attempts.fetch_add(1, Ordering::SeqCst);
+            // Always fail with retryable error
+            Err(OllamaError::Network(
+                reqwest::blocking::Client::new()
+                    .get("not-a-valid-url")
+                    .build()
+                    .unwrap_err(),
+            ))
+        });
 
         assert!(result.is_err());
         // Should have tried initial attempt + 3 retries = 4 total attempts
         assert_eq!(attempts.load(Ordering::SeqCst), 4);
     }
 
-    #[tokio::test]
-    async fn retry_delays_increase_exponentially() {
+    #[test]
+    fn retry_delays_increase_exponentially() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Instant;
@@ -520,21 +500,18 @@ mod tests {
 
         let _result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                let count = attempts.fetch_add(1, Ordering::SeqCst);
-                if count < 2 {
-                    Err(OllamaError::Network(
-                        reqwest::Client::new()
-                            .get("not-a-valid-url")
-                            .build()
-                            .unwrap_err(),
-                    ))
-                } else {
-                    Ok("success")
-                }
+            let count = attempts.fetch_add(1, Ordering::SeqCst);
+            if count < 2 {
+                Err(OllamaError::Network(
+                    reqwest::blocking::Client::new()
+                        .get("not-a-valid-url")
+                        .build()
+                        .unwrap_err(),
+                ))
+            } else {
+                Ok("success")
             }
-        })
-        .await;
+        });
 
         let elapsed = start.elapsed();
         // Should have delays of 1s + 2s = 3s minimum (plus some overhead)
@@ -543,8 +520,8 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
     }
 
-    #[tokio::test]
-    async fn retry_does_not_occur_on_http_4xx_errors() {
+    #[test]
+    fn retry_does_not_occur_on_http_4xx_errors() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -552,21 +529,18 @@ mod tests {
         let attempts_clone = attempts.clone();
         let result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                attempts.fetch_add(1, Ordering::SeqCst);
-                // Return 4xx error (should not retry)
-                Err(OllamaError::Http { status: 404 })
-            }
-        })
-        .await;
+            attempts.fetch_add(1, Ordering::SeqCst);
+            // Return 4xx error (should not retry)
+            Err(OllamaError::Http { status: 404 })
+        });
 
         assert!(result.is_err());
         // Should only try once, no retries
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn retry_occurs_on_http_5xx_errors() {
+    #[test]
+    fn retry_occurs_on_http_5xx_errors() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -574,33 +548,29 @@ mod tests {
         let attempts_clone = attempts.clone();
         let result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                let count = attempts.fetch_add(1, Ordering::SeqCst);
-                if count < 1 {
-                    // Return 5xx error (should retry)
-                    Err(OllamaError::Http { status: 500 })
-                } else {
-                    Ok("success")
-                }
+            let count = attempts.fetch_add(1, Ordering::SeqCst);
+            if count < 1 {
+                // Return 5xx error (should retry)
+                Err(OllamaError::Http { status: 500 })
+            } else {
+                Ok("success")
             }
-        })
-        .await;
+        });
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "success");
         assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
-    #[tokio::test]
-    async fn trait_can_be_implemented_by_mock_struct() {
+    #[test]
+    fn trait_can_be_implemented_by_mock_struct() {
         // Create a mock implementation of the trait
         struct MockClient {
             response: String,
         }
 
-        #[async_trait]
         impl OllamaClientTrait for MockClient {
-            async fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
+            fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
                 Ok(self.response.clone())
             }
         }
@@ -608,13 +578,13 @@ mod tests {
         let mock = MockClient {
             response: "test response".to_string(),
         };
-        let result = mock.generate("test-model", "test prompt").await;
+        let result = mock.generate("test-model", "test prompt");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "test response");
     }
 
-    #[tokio::test]
-    async fn generate_method_calls_correct_ollama_endpoint() {
+    #[test]
+    fn generate_method_calls_correct_ollama_endpoint() {
         // This test verifies the endpoint URL construction
         // We can't easily test the actual HTTP call without a real server,
         // but we can verify the URL is constructed correctly
@@ -626,8 +596,8 @@ mod tests {
         // The actual endpoint would be: http://localhost:11434/api/generate
     }
 
-    #[tokio::test]
-    async fn generate_serializes_request_body_correctly() {
+    #[test]
+    fn generate_serializes_request_body_correctly() {
         // Test that the request body JSON structure is correct
         let request_body = serde_json::json!({
             "model": "test-model",
@@ -638,8 +608,8 @@ mod tests {
         assert_eq!(request_body["prompt"], "test prompt");
     }
 
-    #[tokio::test]
-    async fn generate_parses_response_json_correctly() {
+    #[test]
+    fn generate_parses_response_json_correctly() {
         // Test parsing of Ollama API response format
         let response_json = serde_json::json!({
             "response": "Generated text here"
@@ -654,8 +624,8 @@ mod tests {
         assert_eq!(response_text, "Generated text here");
     }
 
-    #[tokio::test]
-    async fn generate_handles_http_errors_correctly() {
+    #[test]
+    fn generate_handles_http_errors_correctly() {
         // Test error handling for HTTP errors
         let error_404 = OllamaError::Http { status: 404 };
         assert!(matches!(error_404, OllamaError::Http { status: 404 }));
@@ -664,8 +634,8 @@ mod tests {
         assert!(matches!(error_500, OllamaError::Http { status: 500 }));
     }
 
-    #[tokio::test]
-    async fn generate_applies_retry_logic_on_transient_errors() {
+    #[test]
+    fn generate_applies_retry_logic_on_transient_errors() {
         // Test that retry logic would be applied (via should_retry function)
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -676,24 +646,21 @@ mod tests {
         // Simulate a transient error that should be retried
         let result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                let count = attempts.fetch_add(1, Ordering::SeqCst);
-                if count < 1 {
-                    // Transient error (5xx) - should retry
-                    Err(OllamaError::Http { status: 500 })
-                } else {
-                    Ok("success after retry")
-                }
+            let count = attempts.fetch_add(1, Ordering::SeqCst);
+            if count < 1 {
+                // Transient error (5xx) - should retry
+                Err(OllamaError::Http { status: 500 })
+            } else {
+                Ok("success after retry")
             }
-        })
-        .await;
+        });
 
         assert!(result.is_ok());
         assert_eq!(attempts.load(Ordering::SeqCst), 2); // Initial + 1 retry
     }
 
-    #[tokio::test]
-    async fn full_integration_builder_client_generate() {
+    #[test]
+    fn full_integration_builder_client_generate() {
         // Test full integration: builder → client → generate method exists
         let client = OllamaClientBuilder::new()
             .base_url("http://localhost:11434")
@@ -708,8 +675,8 @@ mod tests {
         let _trait_ref: &dyn OllamaClientTrait = &client;
     }
 
-    #[tokio::test]
-    async fn environment_variable_override_precedence() {
+    #[test]
+    fn environment_variable_override_precedence() {
         // Test that builder method takes precedence over environment variable
         unsafe {
             std::env::set_var("OLLAMA_HOST", "http://env-var-host:11434");
@@ -727,8 +694,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn error_types_propagate_correctly_through_retry_logic() {
+    #[test]
+    fn error_types_propagate_correctly_through_retry_logic() {
         // Test that error types are preserved through retry logic
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -739,21 +706,18 @@ mod tests {
         // Create a network error that should be retried
         let result: Result<&str, OllamaError> = retry_with_backoff(move || {
             let attempts = attempts_clone.clone();
-            async move {
-                let count = attempts.fetch_add(1, Ordering::SeqCst);
-                if count < 1 {
-                    Err(OllamaError::Network(
-                        reqwest::Client::new()
-                            .get("not-a-valid-url")
-                            .build()
-                            .unwrap_err(),
-                    ))
-                } else {
-                    Ok("success")
-                }
+            let count = attempts.fetch_add(1, Ordering::SeqCst);
+            if count < 1 {
+                Err(OllamaError::Network(
+                    reqwest::blocking::Client::new()
+                        .get("not-a-valid-url")
+                        .build()
+                        .unwrap_err(),
+                ))
+            } else {
+                Ok("success")
             }
-        })
-        .await;
+        });
 
         // Verify error type is preserved if all retries fail
         assert!(result.is_ok());
