@@ -24,39 +24,47 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 11. [ ] Tag normalization -- Implement consistent tag formatting (lowercase, hyphenation, deduplication) across manual and AI-generated tags `XS`
 
-12. [ ] Note text enhancement -- AI expands fragmentary notes into complete thoughts with clarified intent, storing both original and enhanced versions with provenance metadata `M`
+12. [ ] Tag aliases -- Implement tag_aliases table mapping alternate forms to canonical tag IDs (SKOS prefLabel/altLabel pattern) to solve synonymy problems (car/auto/automobile), with LLM-suggested aliases and user confirmation workflows `M`
 
-13. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command `M`
+13. [ ] Structured logging -- Replace eprintln!/println! with tracing crate for structured logs with context (note IDs, model names, operation types), supporting RUST_LOG environment variable for log levels `S`
 
-14. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
+14. [ ] Note text enhancement -- AI expands fragmentary notes into complete thoughts with clarified intent, storing both original and enhanced versions with provenance metadata `M`
 
-15. [ ] Error message polish -- Ensure all user-facing errors are clear and actionable, following error handling standards `S`
+15. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command `M`
 
-16. [ ] README documentation -- Write usage examples, installation instructions, and architecture overview for open source release `S`
+16. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
 
-17. [ ] ARCHITECTURE.md -- Document system design decisions, layered architecture, and future extensibility for work sample context `S`
+17. [ ] Metrics collection -- Add metrics crate for LLM call metrics (latency, success rate, retry counts), tag generation metrics (tags per note, confidence distribution), and database operation metrics (query duration, operation counts) with optional file-based export `M`
 
-18. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
+18. [ ] Error message polish -- Ensure all user-facing errors are clear and actionable, following error handling standards `S`
 
-19. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
+19. [ ] OpenTelemetry integration -- Add OpenTelemetry support for distributed tracing and metrics export, enabling integration with observability backends (Jaeger, Prometheus, etc.) while maintaining local-first privacy `M`
 
-20. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
+20. [ ] README documentation -- Write usage examples, installation instructions, and architecture overview for open source release `S`
 
-21. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
+21. [ ] ARCHITECTURE.md -- Document system design decisions, layered architecture, and future extensibility for work sample context `S`
 
-22. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
+22. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
 
-23. [ ] Semantic search -- Add vector embeddings (local model) for meaning-based retrieval beyond keyword matching `L`
+23. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
 
-24. [ ] Entity extraction -- Automatically identify and index people, projects, dates, and concepts mentioned in notes `L`
+24. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
 
-25. [ ] Relationship mapping -- AI-discovered connections between notes based on shared entities and semantic similarity `L`
+25. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
 
-26. [ ] GUI desktop app -- Tauri-based graphical interface reusing same NoteService layer `XL`
+26. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
 
-27. [ ] Note editing -- Add `cons edit` command for modifying existing notes with re-tagging `M`
+27. [ ] Semantic search -- Add vector embeddings (local model) for meaning-based retrieval beyond keyword matching `L`
 
-28. [ ] Import from other apps -- Bulk import from common formats (Markdown files, Notion export, Apple Notes) `L`
+28. [ ] Entity extraction -- Automatically identify and index people, projects, dates, and concepts mentioned in notes `L`
+
+29. [ ] Relationship mapping -- AI-discovered connections between notes based on shared entities and semantic similarity `L`
+
+30. [ ] GUI desktop app -- Tauri-based graphical interface reusing same NoteService layer `XL`
+
+31. [ ] Note editing -- Add `cons edit` command for modifying existing notes with re-tagging `M`
+
+32. [ ] Import from other apps -- Bulk import from common formats (Markdown files, Notion export, Apple Notes) `L`
 
 > Notes
 > - Order reflects technical dependencies: schema before service, service before CLI, CLI before AI integration
