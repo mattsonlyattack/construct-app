@@ -32,15 +32,11 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 15. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command; foundation for dual-channel retrieval `M`
 
-### Retrieval Enhancement (v1.x)
-
 16. [ ] Alias-expanded FTS -- Integrate tag_aliases into search queries, expanding "ML" to "ML OR machine-learning OR machine learning" before FTS5 matching; automatic synonym bridging `S`
 
 17. [ ] Graph schema foundation -- Create edges table with confidence (REAL), hierarchy_type ('generic'|'partitive'|NULL), valid_from/valid_until (TIMESTAMP nullable); enables spreading activation and temporal queries `M`
 
 18. [ ] Tag hierarchy population -- LLM suggests broader/narrower relationships between existing tags with confidence scores; user confirms via CLI; distinguish generic (is-a: "transformer" specializes "neural-network") from partitive (part-of: "attention" isPartOf "transformer") using XKOS semantics `M`
-
-### Graph Retrieval (v1.5)
 
 19. [ ] Spreading activation retrieval -- Implement recursive CTE spreading activation from query tags through edges with decay=0.7, threshold=0.1, max_hops=3; accumulate scores to surface hub notes connecting multiple query concepts; cognitive psychology foundation per KNOWLEDGE.md `M`
 
@@ -49,8 +45,6 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 21. [ ] Query expansion -- Before FTS, expand query using aliases (always), broader concepts (for short queries <3 terms); aggressive noise control to prevent over-expansion; configurable expansion depth `S`
 
 22. [ ] Degree centrality -- Precompute connection count per tag/concept, update incrementally on edge changes; use for "most connected" queries, visualization node sizing, and importance signals in retrieval ranking `S`
-
-### Quality & Observability
 
 23. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
 
@@ -66,8 +60,6 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 29. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
 
-### Terminal UI
-
 30. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
 
 31. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
@@ -75,8 +67,6 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 32. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
 
 33. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
-
-### Graph Intelligence (v2)
 
 34. [ ] Entity mention extraction -- LLM identifies people, projects, concepts mentioned in notes; store as note_entities junction with confidence (REAL) and mention_type ('about'|'mentions'); aboutness vs. mention distinction per KNOWLEDGE.md `L`
 
@@ -87,8 +77,6 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 37. [ ] PageRank computation -- Periodic background calculation of PageRank scores for concepts; store as precomputed column updated on startup or significant graph changes; use for "authoritative notes" ranking `M`
 
 38. [ ] Temporal retrieval -- Implement recency-weighted activation (boost = 1.0 + 0.5×e^(-days/30)), enforce validity windows on edges (valid_from/valid_until), support historical queries ("what did I believe about X in 2023") `M`
-
-### Advanced Features (v2+)
 
 39. [ ] Concept schemes -- Namespace concepts into work/personal/project schemes; scheme_id on concepts table; scheme membership provides retrieval boost (1.5x) or hard filter; cross-scheme links remain possible `M`
 
