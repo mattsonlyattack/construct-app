@@ -28,45 +28,84 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 13. [ ] Structured logging -- Replace eprintln!/println! with tracing crate for structured logs with context (note IDs, model names, operation types), supporting RUST_LOG environment variable for log levels `S`
 
-14. [ ] Note text enhancement -- AI expands fragmentary notes into complete thoughts with clarified intent, storing both original and enhanced versions with provenance metadata `M`
+14. [x] Note text enhancement -- AI expands fragmentary notes into complete thoughts with clarified intent, storing both original and enhanced versions with provenance metadata `M`
 
-15. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command `M`
+15. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command; foundation for dual-channel retrieval `M`
 
-16. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
+### Retrieval Enhancement (v1.x)
 
-17. [ ] Metrics collection -- Add metrics crate for LLM call metrics (latency, success rate, retry counts), tag generation metrics (tags per note, confidence distribution), and database operation metrics (query duration, operation counts) with optional file-based export `M`
+16. [ ] Alias-expanded FTS -- Integrate tag_aliases into search queries, expanding "ML" to "ML OR machine-learning OR machine learning" before FTS5 matching; automatic synonym bridging `S`
 
-18. [ ] Error message polish -- Ensure all user-facing errors are clear and actionable, following error handling standards `S`
+17. [ ] Graph schema foundation -- Create edges table with confidence (REAL), hierarchy_type ('generic'|'partitive'|NULL), valid_from/valid_until (TIMESTAMP nullable); enables spreading activation and temporal queries `M`
 
-19. [ ] OpenTelemetry integration -- Add OpenTelemetry support for distributed tracing and metrics export, enabling integration with observability backends (Jaeger, Prometheus, etc.) while maintaining local-first privacy `M`
+18. [ ] Tag hierarchy population -- LLM suggests broader/narrower relationships between existing tags with confidence scores; user confirms via CLI; distinguish generic (is-a: "transformer" specializes "neural-network") from partitive (part-of: "attention" isPartOf "transformer") using XKOS semantics `M`
 
-20. [ ] README documentation -- Write usage examples, installation instructions, and architecture overview for open source release `S`
+### Graph Retrieval (v1.5)
 
-21. [ ] ARCHITECTURE.md -- Document system design decisions, layered architecture, and future extensibility for work sample context `S`
+19. [ ] Spreading activation retrieval -- Implement recursive CTE spreading activation from query tags through edges with decay=0.7, threshold=0.1, max_hops=3; accumulate scores to surface hub notes connecting multiple query concepts; cognitive psychology foundation per KNOWLEDGE.md `M`
 
-22. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
+20. [ ] Dual-channel search -- Combine FTS5 results with spreading activation using intersection boost (1.5x multiplier for notes found by both channels); graceful degradation to FTS-only when graph density below threshold (cold-start handling) `M`
 
-23. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
+21. [ ] Query expansion -- Before FTS, expand query using aliases (always), broader concepts (for short queries <3 terms); aggressive noise control to prevent over-expansion; configurable expansion depth `S`
 
-24. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
+22. [ ] Degree centrality -- Precompute connection count per tag/concept, update incrementally on edge changes; use for "most connected" queries, visualization node sizing, and importance signals in retrieval ranking `S`
 
-25. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
+### Quality & Observability
 
-26. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
+23. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
 
-27. [ ] Semantic search -- Add vector embeddings (local model) for meaning-based retrieval beyond keyword matching `L`
+24. [ ] Metrics collection -- Add metrics crate for LLM call metrics (latency, success rate, retry counts), tag generation metrics (tags per note, confidence distribution), and database operation metrics (query duration, operation counts) with optional file-based export `M`
 
-28. [ ] Entity extraction -- Automatically identify and index people, projects, dates, and concepts mentioned in notes `L`
+25. [ ] Error message polish -- Ensure all user-facing errors are clear and actionable, following error handling standards `S`
 
-29. [ ] Relationship mapping -- AI-discovered connections between notes based on shared entities and semantic similarity `L`
+26. [ ] OpenTelemetry integration -- Add OpenTelemetry support for distributed tracing and metrics export, enabling integration with observability backends (Jaeger, Prometheus, etc.) while maintaining local-first privacy `M`
 
-30. [ ] GUI desktop app -- Tauri-based graphical interface reusing same NoteService layer `XL`
+27. [ ] README documentation -- Write usage examples, installation instructions, and architecture overview for open source release `S`
 
-31. [ ] Note editing -- Add `cons edit` command for modifying existing notes with re-tagging `M`
+28. [ ] ARCHITECTURE.md -- Document system design decisions, layered architecture, and future extensibility for work sample context `S`
 
-32. [ ] Import from other apps -- Bulk import from common formats (Markdown files, Notion export, Apple Notes) `L`
+29. [ ] GitHub Actions CI -- Set up automated testing, linting (clippy), and formatting checks on pull requests `S`
+
+### Terminal UI
+
+30. [ ] Ratatui TUI foundation -- Build terminal UI scaffold using ratatui with basic layout (note list, detail view, search input) `M`
+
+31. [ ] TUI note browsing -- Implement scrollable note list with keyboard navigation, displaying note content and tags `M`
+
+32. [ ] TUI search and filtering -- Add interactive search and tag filtering within TUI, reusing NoteService for all operations `S`
+
+33. [ ] Architecture proof -- Demonstrate that TUI and CLI share identical NoteService with zero code duplication in business logic `XS`
+
+### Graph Intelligence (v2)
+
+34. [ ] Entity mention extraction -- LLM identifies people, projects, concepts mentioned in notes; store as note_entities junction with confidence (REAL) and mention_type ('about'|'mentions'); aboutness vs. mention distinction per KNOWLEDGE.md `L`
+
+35. [ ] Entity resolution -- Merge duplicate entities using alias detection (fuzzy matching + LLM suggestions) and user confirmation; link resolved entities to canonical concept IDs; prevents entity proliferation `M`
+
+36. [ ] Relationship suggestion UI -- LLM infers semantic relationships (supports, contradicts, extends) between notes; surface as suggestions in TUI/CLI, never auto-assert; user confirms/rejects; only confirmed relationships affect retrieval `M`
+
+37. [ ] PageRank computation -- Periodic background calculation of PageRank scores for concepts; store as precomputed column updated on startup or significant graph changes; use for "authoritative notes" ranking `M`
+
+38. [ ] Temporal retrieval -- Implement recency-weighted activation (boost = 1.0 + 0.5×e^(-days/30)), enforce validity windows on edges (valid_from/valid_until), support historical queries ("what did I believe about X in 2023") `M`
+
+### Advanced Features (v2+)
+
+39. [ ] Concept schemes -- Namespace concepts into work/personal/project schemes; scheme_id on concepts table; scheme membership provides retrieval boost (1.5x) or hard filter; cross-scheme links remain possible `M`
+
+40. [ ] Betweenness centrality -- Offline computation identifying concepts that bridge different topic clusters; surface as "cross-domain insights" or "connector notes"; expensive, compute in background `M`
+
+41. [ ] Vector embeddings (conditional) -- Only implement if retrieval metrics show FTS+graph fails for >20% of user queries; use local embedding model (e.g., all-MiniLM-L6-v2) for privacy; store in separate table with note_id foreign key `L`
+
+42. [ ] GUI desktop app -- Tauri-based graphical interface reusing same NoteService layer `XL`
+
+43. [ ] Note editing -- Add `cons edit` command for modifying existing notes with re-tagging `M`
+
+44. [ ] Import from other apps -- Bulk import from common formats (Markdown files, Notion export, Apple Notes) `L`
 
 > Notes
-> - Order reflects technical dependencies: schema before service, service before CLI, CLI before AI integration
+> - Order reflects technical dependencies and KNOWLEDGE.md phasing: FTS → graph schema → spreading activation → dual-channel → entity extraction → relationship inference
+> - Graph retrieval (items 19-22) can be built on existing tag infrastructure before entity extraction
+> - Relationship inference (item 36) surfaces suggestions only; never auto-asserts per KNOWLEDGE.md risk analysis
+> - Vector embeddings (item 41) are conditional—only implement if FTS+graph retrieval proves insufficient
 > - Each item represents end-to-end testable functionality
 > - Effort estimates: XS (1 day), S (2-3 days), M (1 week), L (2 weeks), XL (3+ weeks)
