@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use cons::autotagger::{compare_tags, load_corpus, AutoTaggerBuilder};
+use cons::autotagger::{AutoTaggerBuilder, compare_tags, load_corpus};
 use cons::ollama::{OllamaClientTrait, OllamaError};
 
 /// Skip test if running in GitHub Actions

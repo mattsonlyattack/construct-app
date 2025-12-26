@@ -1458,3 +1458,339 @@ fn update_note_enhancement_method_updates_existing_note() {
     // Original content should be unchanged
     assert_eq!(updated.content(), "Quick thought");
 }
+
+// --- Search Tests (Task Group 2: NoteService Search Method) ---
+
+#[test]
+fn search_notes_returns_matching_notes() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with different content
+    service
+        .create_note("Learning Rust programming", Some(&["rust"]))
+        .expect("failed to create note 1");
+    service
+        .create_note("Python scripting tutorial", Some(&["python"]))
+        .expect("failed to create note 2");
+    service
+        .create_note("Rust and Python comparison", Some(&["rust", "python"]))
+        .expect("failed to create note 3");
+
+    // Search for "rust"
+    let results = service
+        .search_notes("rust", None)
+        .expect("search should succeed");
+
+    assert_eq!(results.len(), 2, "should find 2 notes containing rust");
+
+    // Verify results contain correct notes
+    let contents: Vec<&str> = results.iter().map(|n| n.content()).collect();
+    assert!(contents.contains(&"Learning Rust programming"));
+    assert!(contents.contains(&"Rust and Python comparison"));
+}
+
+#[test]
+fn search_notes_with_and_logic_requires_all_terms() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with different combinations of terms
+    service
+        .create_note("Rust programming language", None)
+        .expect("failed to create note 1");
+    service
+        .create_note("Python programming language", None)
+        .expect("failed to create note 2");
+    service
+        .create_note("Rust and Python both great", None)
+        .expect("failed to create note 3");
+    service
+        .create_note("Learning Rust", None)
+        .expect("failed to create note 4");
+
+    // Search for "rust programming" (both terms required)
+    let results = service
+        .search_notes("rust programming", None)
+        .expect("search should succeed");
+
+    // Only notes containing both "rust" AND "programming" should match
+    assert_eq!(
+        results.len(),
+        1,
+        "should find 1 note with both rust and programming"
+    );
+    assert_eq!(results[0].content(), "Rust programming language");
+}
+
+#[test]
+fn search_notes_uses_porter_stemming() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with different word forms that stem to the same root
+    // Using "program" which stems: programming -> program, programs -> program
+    let note1 = service
+        .create_note("I love programming in Rust", None)
+        .expect("failed to create note 1");
+    let note2 = service
+        .create_note("Many programs are written in C", None)
+        .expect("failed to create note 2");
+
+    // Search using base form "program" should match both variants
+    let results = service
+        .search_notes("program", None)
+        .expect("search should succeed");
+
+    assert_eq!(
+        results.len(),
+        2,
+        "porter stemming should match programming and programs"
+    );
+
+    // Verify both notes are in results
+    let result_ids: Vec<_> = results.iter().map(|n| n.id()).collect();
+    assert!(result_ids.contains(&note1.id()));
+    assert!(result_ids.contains(&note2.id()));
+}
+
+#[test]
+fn search_notes_searches_content_enhanced_and_tags() {
+    use time::OffsetDateTime;
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note with original content
+    let note1 = service
+        .create_note("Quick thought", Some(&["machine-learning"]))
+        .expect("failed to create note 1");
+
+    // Add enhanced content
+    let now = OffsetDateTime::now_utc();
+    service
+        .update_note_enhancement(
+            note1.id(),
+            "This is a detailed explanation about artificial intelligence",
+            "deepseek-r1:8b",
+            0.9,
+            now,
+        )
+        .expect("failed to update enhancement");
+
+    // Create another note with tag only
+    service
+        .create_note("Another note", Some(&["rust"]))
+        .expect("failed to create note 2");
+
+    // Search for term in enhanced content
+    let results = service
+        .search_notes("artificial", None)
+        .expect("search should succeed");
+    assert_eq!(
+        results.len(),
+        1,
+        "should find note by enhanced content term"
+    );
+    assert_eq!(results[0].id(), note1.id());
+
+    // Search for tag name
+    let tag_results = service
+        .search_notes("machine-learning", None)
+        .expect("search should succeed");
+    assert_eq!(tag_results.len(), 1, "should find note by tag name");
+    assert_eq!(tag_results[0].id(), note1.id());
+}
+
+#[test]
+fn search_notes_empty_query_returns_error() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Empty query should return error
+    let result = service.search_notes("", None);
+    assert!(result.is_err(), "empty query should return error");
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("cannot be empty"),
+        "error should mention empty query: {}",
+        err_msg
+    );
+
+    // Whitespace-only query should also fail
+    let whitespace_result = service.search_notes("   ", None);
+    assert!(
+        whitespace_result.is_err(),
+        "whitespace-only query should return error"
+    );
+}
+
+#[test]
+fn search_notes_limit_parameter_restricts_results() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create multiple notes with the same term
+    for i in 1..=5 {
+        service
+            .create_note(&format!("Rust note {}", i), None)
+            .expect("failed to create note");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Search without limit
+    let all_results = service
+        .search_notes("rust", None)
+        .expect("search should succeed");
+    assert_eq!(all_results.len(), 5, "should find all 5 notes");
+
+    // Search with limit of 2
+    let limited_results = service
+        .search_notes("rust", Some(2))
+        .expect("search should succeed");
+    assert_eq!(
+        limited_results.len(),
+        2,
+        "should return exactly 2 notes when limited"
+    );
+}
+
+#[test]
+fn search_notes_returns_full_note_objects_with_tags() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note with tags
+    let note = service
+        .create_note("Rust tutorial", Some(&["rust", "programming"]))
+        .expect("failed to create note");
+
+    // Search for it
+    let results = service
+        .search_notes("tutorial", None)
+        .expect("search should succeed");
+
+    assert_eq!(results.len(), 1, "should find 1 note");
+
+    // Verify full Note object is returned with tags
+    let found_note = &results[0];
+    assert_eq!(found_note.id(), note.id());
+    assert_eq!(found_note.content(), "Rust tutorial");
+    assert_eq!(found_note.tags().len(), 2, "note should include all tags");
+}
+
+// --- Additional Strategic Tests (Task Group 4: Test Review) ---
+
+#[test]
+fn search_notes_orders_results_by_bm25_relevance() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with different relevance for "rust"
+    // Note 1: "rust" appears once
+    let note1 = service
+        .create_note("learning rust programming", None)
+        .expect("failed to create note 1");
+
+    // Note 2: "rust" appears three times (highest relevance)
+    let note2 = service
+        .create_note("rust rust rust is amazing for systems", None)
+        .expect("failed to create note 2");
+
+    // Note 3: "rust" appears twice
+    let note3 = service
+        .create_note("rust and more rust content", None)
+        .expect("failed to create note 3");
+
+    // Search for "rust"
+    let results = service
+        .search_notes("rust", None)
+        .expect("search should succeed");
+
+    assert_eq!(results.len(), 3, "should find all 3 notes");
+
+    // BM25 orders by ascending score (lower is better), so most relevant should be first
+    // Note 2 (3 occurrences) should be most relevant, then note3 (2), then note1 (1)
+    assert_eq!(
+        results[0].id(),
+        note2.id(),
+        "most relevant note (3 occurrences) should be first"
+    );
+    assert_eq!(
+        results[1].id(),
+        note3.id(),
+        "second most relevant note (2 occurrences) should be second"
+    );
+    assert_eq!(
+        results[2].id(),
+        note1.id(),
+        "least relevant note (1 occurrence) should be last"
+    );
+}
+
+#[test]
+fn list_notes_works_independently_of_fts_functionality() {
+    // Fail-safe test: Verify that list_notes doesn't depend on FTS table
+    // This ensures note access via `cons list` works even if FTS has issues
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with tags
+    let note1 = service
+        .create_note("First note", Some(&["rust"]))
+        .expect("failed to create note 1");
+
+    let note2 = service
+        .create_note("Second note", Some(&["python"]))
+        .expect("failed to create note 2");
+
+    // Verify FTS table exists and is populated
+    let conn = service.database().connection();
+    let fts_count_before: i64 = conn
+        .query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))
+        .expect("FTS table should exist");
+    assert_eq!(fts_count_before, 2, "FTS should have 2 entries");
+
+    // Simulate FTS corruption by dropping the FTS table
+    // This tests the fail-safe requirement: "FTS issues don't block note access via cons list"
+    conn.execute("DROP TABLE notes_fts", [])
+        .expect("failed to drop FTS table");
+
+    // Verify FTS table is gone
+    let fts_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes_fts')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("failed to check FTS table existence");
+    assert_eq!(fts_exists, false, "FTS table should be dropped");
+
+    // list_notes should still work (doesn't depend on FTS)
+    let notes = service
+        .list_notes(ListNotesOptions::default())
+        .expect("list_notes should succeed even without FTS table");
+
+    assert_eq!(notes.len(), 2, "should list all notes despite FTS being gone");
+
+    // Verify we got the correct notes
+    let note_ids: Vec<_> = notes.iter().map(|n| n.id()).collect();
+    assert!(
+        note_ids.contains(&note1.id()),
+        "should include first note"
+    );
+    assert!(
+        note_ids.contains(&note2.id()),
+        "should include second note"
+    );
+
+    // Verify notes have their tags
+    for note in &notes {
+        assert_eq!(
+            note.tags().len(),
+            1,
+            "notes should include their tags even without FTS"
+        );
+    }
+}

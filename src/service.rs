@@ -888,6 +888,102 @@ impl NoteService {
         Ok(())
     }
 
+    /// Searches for notes using full-text search across content, enhanced content, and tags.
+    ///
+    /// Uses SQLite FTS5 with BM25 relevance ranking to find notes matching the search query.
+    /// All search terms must match (AND logic). Porter stemming automatically handles word
+    /// variations (e.g., "running" matches "run").
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Search query string (cannot be empty or whitespace-only)
+    /// * `limit` - Optional maximum number of results to return
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of Note objects ordered by relevance (most relevant first).
+    /// Each Note includes full data including tags for consistent display.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the query is empty or contains only whitespace.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create some notes
+    /// service.create_note("Learning Rust programming", Some(&["rust"]))?;
+    /// service.create_note("Python tutorial", Some(&["python"]))?;
+    ///
+    /// // Search for notes about Rust
+    /// let results = service.search_notes("rust", None)?;
+    /// assert_eq!(results.len(), 1);
+    ///
+    /// // Search with limit
+    /// let limited = service.search_notes("programming", Some(10))?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<Note>> {
+        // Validate query is not empty or whitespace-only
+        let trimmed_query = query.trim();
+        if trimmed_query.is_empty() {
+            anyhow::bail!("Search query cannot be empty");
+        }
+
+        // Process query: split on whitespace, escape each term, join with spaces for AND logic
+        let terms: Vec<String> = trimmed_query
+            .split_whitespace()
+            .map(|term| {
+                // Escape double quotes by doubling them, then wrap term in quotes
+                let escaped = term.replace('"', "\"\"");
+                format!("\"{}\"", escaped)
+            })
+            .collect();
+
+        let fts_query = terms.join(" ");
+
+        let conn = self.db.connection();
+
+        // Query FTS5 table with BM25 ranking
+        // ORDER BY bm25() ascending (lower scores are more relevant in FTS5)
+        let query_sql = if let Some(limit_val) = limit {
+            format!(
+                "SELECT note_id FROM notes_fts
+                 WHERE notes_fts MATCH ?
+                 ORDER BY bm25(notes_fts)
+                 LIMIT {}",
+                limit_val
+            )
+        } else {
+            "SELECT note_id FROM notes_fts
+             WHERE notes_fts MATCH ?
+             ORDER BY bm25(notes_fts)"
+                .to_string()
+        };
+
+        let mut stmt = conn.prepare(&query_sql)?;
+        let note_ids: Vec<i64> = stmt
+            .query_map([&fts_query], |row| row.get(0))?
+            .collect::<Result<Vec<i64>, _>>()?;
+
+        // Load full Note objects using get_note (includes tags)
+        let mut notes = Vec::new();
+        for id in note_ids {
+            if let Some(note) = self.get_note(NoteId::new(id))? {
+                notes.push(note);
+            }
+        }
+
+        Ok(notes)
+    }
+
     /// Updates the enhancement fields for an existing note.
     ///
     /// This method is designed for the enhancement workflow where:

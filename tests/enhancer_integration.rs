@@ -58,9 +58,7 @@ fn enhance_fragmentary_note_with_real_ollama() {
     let model = get_model(client.base_url());
     println!("Using model: {}", model);
 
-    let enhancer = NoteEnhancerBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    let enhancer = NoteEnhancerBuilder::new().client(Arc::new(client)).build();
 
     // Test with a fragmentary note
     let result = enhancer.enhance_content(&model, "buy milk eggs bread");
@@ -110,9 +108,7 @@ fn enhance_complete_note_with_real_ollama() {
     let model = get_model(client.base_url());
     println!("Using model: {}", model);
 
-    let enhancer = NoteEnhancerBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    let enhancer = NoteEnhancerBuilder::new().client(Arc::new(client)).build();
 
     // Test with an already-complete note
     let complete_note = "Remember to buy milk, eggs, and bread from the grocery store tomorrow.";

@@ -25,6 +25,8 @@ enum Commands {
     Add(AddCommand),
     /// List notes with optional filtering and pagination
     List(ListCommand),
+    /// Search notes by content, enhanced content, and tags
+    Search(SearchCommand),
     /// Manage tag aliases
     TagAlias(TagAliasCommand),
 }
@@ -51,6 +53,18 @@ struct ListCommand {
     /// Filter by comma-separated tags (AND logic)
     #[arg(short, long, value_name = "TAGS")]
     tags: Option<String>,
+}
+
+/// Search notes by content, enhanced content, and tags
+#[derive(Parser)]
+struct SearchCommand {
+    /// The search query
+    #[arg(value_name = "QUERY")]
+    query: String,
+
+    /// Maximum number of results to display (default: 10)
+    #[arg(short, long, value_name = "LIMIT")]
+    limit: Option<usize>,
 }
 
 /// Manage tag aliases
@@ -93,6 +107,7 @@ fn main() {
     let result = match &cli.command {
         Commands::Add(cmd) => handle_add(cmd),
         Commands::List(cmd) => handle_list(cmd),
+        Commands::Search(cmd) => handle_search(cmd),
         Commands::TagAlias(cmd) => handle_tag_alias(cmd),
     };
 
@@ -206,46 +221,44 @@ fn find_alias_opportunity(service: &NoteService, suggested_tag: &str) -> Option<
         .ok()?;
 
     // Look for a longer tag that could be the canonical form
-    for row_result in tag_rows {
-        if let Ok((tag_id, tag_name)) = row_result {
-            // Skip if this is the same tag
-            if tag_name == normalized_suggested {
-                continue;
-            }
+    for (tag_id, tag_name) in tag_rows.flatten() {
+        // Skip if this is the same tag
+        if tag_name == normalized_suggested {
+            continue;
+        }
 
-            // Check if this could be an acronym of a hyphenated tag
-            // e.g., "ml" could be an acronym for "machine-learning"
-            if tag_name.len() >= normalized_suggested.len() * 2 && tag_name.contains('-') {
-                let parts: Vec<&str> = tag_name.split('-').collect();
+        // Check if this could be an acronym of a hyphenated tag
+        // e.g., "ml" could be an acronym for "machine-learning"
+        if tag_name.len() >= normalized_suggested.len() * 2 && tag_name.contains('-') {
+            let parts: Vec<&str> = tag_name.split('-').collect();
 
-                // Check if the abbreviation matches the first letters of each part
-                if parts.len() == normalized_suggested.len() {
-                    let matches_acronym = parts
-                        .iter()
-                        .zip(normalized_suggested.chars())
-                        .all(|(part, ch)| part.chars().next() == Some(ch));
+            // Check if the abbreviation matches the first letters of each part
+            if parts.len() == normalized_suggested.len() {
+                let matches_acronym = parts
+                    .iter()
+                    .zip(normalized_suggested.chars())
+                    .all(|(part, ch)| part.starts_with(ch));
 
-                    if matches_acronym {
-                        return Some(TagId::new(tag_id));
-                    }
-                }
-
-                // Also check for simple prefix matches on any part
-                for part in &parts {
-                    if part.starts_with(&normalized_suggested)
-                        && part.len() >= normalized_suggested.len() * 2
-                    {
-                        return Some(TagId::new(tag_id));
-                    }
+                if matches_acronym {
+                    return Some(TagId::new(tag_id));
                 }
             }
 
-            // Check direct prefix match (e.g., "ai" matches "aimodel")
-            if tag_name.starts_with(&normalized_suggested)
-                && tag_name.len() >= normalized_suggested.len() * 2
-            {
-                return Some(TagId::new(tag_id));
+            // Also check for simple prefix matches on any part
+            for part in &parts {
+                if part.starts_with(&normalized_suggested)
+                    && part.len() >= normalized_suggested.len() * 2
+                {
+                    return Some(TagId::new(tag_id));
+                }
             }
+        }
+
+        // Check direct prefix match (e.g., "ai" matches "aimodel")
+        if tag_name.starts_with(&normalized_suggested)
+            && tag_name.len() >= normalized_suggested.len() * 2
+        {
+            return Some(TagId::new(tag_id));
         }
     }
 
@@ -451,6 +464,73 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
     let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
 
     // Display each note
+    for note in &notes {
+        // Format timestamp as "YYYY-MM-DD HH:MM"
+        let timestamp = note
+            .created_at()
+            .format(&format)
+            .unwrap_or_else(|_| "Invalid date".to_string());
+
+        // Get tag names using batch query
+        let tag_assignments = note.tags();
+        let tag_names: Vec<String> = get_tag_names(service.database(), tag_assignments)?
+            .into_iter()
+            .map(|name| format!("#{}", name))
+            .collect();
+
+        // Display note information
+        println!("ID: {}", note.id().get());
+        println!("Created: {}", timestamp);
+
+        // Display content using stacked format (original + enhanced if available)
+        print!("{}", format_note_content(note));
+
+        if !tag_names.is_empty() {
+            println!("Tags: {}", tag_names.join(" "));
+        }
+        println!(); // Blank line separator
+    }
+
+    Ok(())
+}
+
+/// Handles the search command by searching notes.
+fn handle_search(cmd: &SearchCommand) -> Result<()> {
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+    let service = NoteService::new(db);
+
+    execute_search(&cmd.query, cmd.limit, service)
+}
+
+/// Executes the search command logic with a provided NoteService.
+///
+/// This function is separated from `handle_search` to allow testing with in-memory databases.
+fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Result<()> {
+    use time::macros::format_description;
+
+    // Apply default limit of 10 when not specified
+    let limit = limit.unwrap_or(10);
+
+    // Call service search_notes method
+    let notes = service
+        .search_notes(query, Some(limit))
+        .context("Failed to search notes")?;
+
+    // Handle empty results
+    if notes.is_empty() {
+        println!("No notes found matching query");
+        return Ok(());
+    }
+
+    // Format descriptor for "YYYY-MM-DD HH:MM"
+    let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+    // Display each note (using same format as list command)
     for note in &notes {
         // Format timestamp as "YYYY-MM-DD HH:MM"
         let timestamp = note
@@ -1705,5 +1785,87 @@ mod tests {
                 formatted
             );
         }
+    }
+
+    // --- Search Command Tests (Task Group 3) ---
+
+    #[test]
+    fn search_command_struct_parsing_with_clap() {
+        use clap::CommandFactory;
+
+        // Test parsing with positional query and --limit flag
+        let matches = Cli::command()
+            .try_get_matches_from(vec!["cons", "search", "rust programming", "-l", "5"])
+            .expect("failed to parse search command");
+
+        // Verify command is recognized
+        assert!(matches.subcommand_matches("search").is_some());
+    }
+
+    #[test]
+    fn execute_search_with_in_memory_database_returns_results() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with searchable content
+        service
+            .create_note("Learning Rust programming", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Python programming tutorial", Some(&["python"]))
+            .expect("failed to create note");
+
+        // Search for Rust-related notes
+        let result = execute_search("rust", Some(10), service);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_search_with_empty_database_shows_no_notes_found() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Search in empty database
+        let result = execute_search("rust", Some(10), service);
+        assert!(result.is_ok());
+        // The function should complete successfully and print "No notes found matching query"
+    }
+
+    #[test]
+    fn execute_search_with_empty_query_returns_error() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Test empty string
+        let result = execute_search("", Some(10), service);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let error_msg = format!("{:#}", error); // Use alternate format to show chain
+        eprintln!("Actual error message: '{}'", error_msg);
+        assert!(
+            error_msg.contains("Search query cannot be empty")
+                || error_msg.contains("cannot be empty"),
+            "Error message '{}' should contain 'cannot be empty'",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn execute_search_with_whitespace_only_query_returns_error() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Test whitespace-only query
+        let result = execute_search("   \n\t  ", Some(10), service);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        let error_msg = format!("{:#}", error); // Use alternate format to show chain
+        eprintln!("Actual error message: '{}'", error_msg);
+        assert!(
+            error_msg.contains("Search query cannot be empty")
+                || error_msg.contains("cannot be empty"),
+            "Error message '{}' should contain 'cannot be empty'",
+            error_msg
+        );
     }
 }

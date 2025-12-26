@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::Connection;
 
-use schema::{INITIAL_SCHEMA, MIGRATIONS};
+use schema::{FTS_TABLE_CREATION, FTS_TRIGGERS, INITIAL_SCHEMA, MIGRATIONS};
 
 /// Database wrapper providing connection management and schema initialization.
 pub struct Database {
@@ -39,6 +39,8 @@ impl Database {
     /// Executes all schema statements in a single transaction.
     /// Uses IF NOT EXISTS for idempotent execution.
     /// Runs migrations for column additions, ignoring "duplicate column" errors.
+    /// Creates FTS5 virtual table and triggers if they don't exist.
+    /// Populates FTS index from existing notes.
     fn initialize_schema(&self) -> Result<()> {
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
         self.conn.execute_batch(INITIAL_SCHEMA)?;
@@ -73,6 +75,62 @@ impl Database {
             }
         }
 
+        // Initialize FTS5 virtual table and triggers
+        self.initialize_fts()?;
+
+        Ok(())
+    }
+
+    /// Initializes FTS5 virtual table, triggers, and populates the index.
+    ///
+    /// FTS5 does NOT support IF NOT EXISTS, so we check sqlite_master first.
+    /// After creating the table and triggers, we populate the index from existing notes.
+    fn initialize_fts(&self) -> Result<()> {
+        // Check if FTS table already exists
+        let fts_exists: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes_fts')",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if !fts_exists {
+            // Create FTS virtual table
+            self.conn.execute_batch(FTS_TABLE_CREATION)?;
+        }
+
+        // Create triggers (idempotent with IF NOT EXISTS)
+        self.conn.execute_batch(FTS_TRIGGERS)?;
+
+        // Populate/rebuild FTS index from existing notes
+        // This handles both fresh creation and existing databases where FTS might be stale
+        self.populate_fts_index()?;
+
+        Ok(())
+    }
+
+    /// Populates the FTS index from existing notes and tags.
+    ///
+    /// Clears the existing FTS index and rebuilds it from the notes table.
+    /// This operation is idempotent and safe to run on every database open.
+    fn populate_fts_index(&self) -> Result<()> {
+        // Clear existing FTS index
+        self.conn.execute("DELETE FROM notes_fts", [])?;
+
+        // Rebuild from notes and tags
+        self.conn.execute(
+            "INSERT INTO notes_fts (note_id, content, content_enhanced, tags)
+             SELECT
+                 n.id,
+                 n.content,
+                 n.content_enhanced,
+                 (SELECT GROUP_CONCAT(t.name, ' ')
+                  FROM note_tags nt
+                  JOIN tags t ON nt.tag_id = t.id
+                  WHERE nt.note_id = n.id)
+             FROM notes n",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -87,6 +145,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
     use tempfile::tempdir;
 
     #[test]
@@ -847,5 +906,343 @@ mod tests {
         // Reopen again - should be idempotent (no errors)
         let db3 = Database::open(&db_path);
         assert!(db3.is_ok(), "Schema migration should be idempotent");
+    }
+
+    #[test]
+    fn fts5_virtual_table_created() {
+        let db = Database::in_memory().unwrap();
+
+        // Check that notes_fts virtual table exists
+        let table_exists: bool = db
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes_fts')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(table_exists, "notes_fts virtual table should exist");
+    }
+
+    #[test]
+    fn fts5_virtual_table_creation_is_idempotent() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Create database first time
+        {
+            let db = Database::open(&db_path).unwrap();
+            let table_exists: bool = db
+                .connection()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes_fts')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(table_exists);
+        }
+
+        // Reopen - FTS table creation should be idempotent
+        let db2 = Database::open(&db_path);
+        assert!(db2.is_ok(), "FTS table creation should be idempotent");
+
+        let table_exists: bool = db2
+            .unwrap()
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='notes_fts')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_exists);
+    }
+
+    #[test]
+    fn fts_index_populated_on_database_open() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Create database and insert notes before FTS exists
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
+            conn.execute_batch(INITIAL_SCHEMA).unwrap();
+
+            // Insert test notes
+            conn.execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'rust programming')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO notes (id, content) VALUES (2, 'python scripting')",
+                [],
+            )
+            .unwrap();
+
+            // Insert tag
+            conn.execute("INSERT INTO tags (id, name) VALUES (1, 'coding')", [])
+                .unwrap();
+            conn.execute("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)", [])
+                .unwrap();
+        }
+
+        // Reopen with Database wrapper - should populate FTS index
+        let db = Database::open(&db_path).unwrap();
+
+        // Verify FTS index contains the notes
+        let count: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(count, 2, "FTS index should contain both notes");
+
+        // Verify search works
+        let rust_note_id: i64 = db
+            .connection()
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'rust'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(rust_note_id, 1);
+    }
+
+    #[test]
+    fn fts_triggers_sync_on_note_insert() {
+        let db = Database::in_memory().unwrap();
+        let conn = db.connection();
+
+        // Insert a new note
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (1, 'trigger test insert')",
+            [],
+        )
+        .unwrap();
+
+        // Verify FTS index was updated by trigger
+        let note_id: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'trigger'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+
+        assert_eq!(note_id, Some(1));
+    }
+
+    #[test]
+    fn fts_triggers_sync_on_note_update() {
+        let db = Database::in_memory().unwrap();
+        let conn = db.connection();
+
+        // Insert and then update a note
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (1, 'original content')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute(
+            "UPDATE notes SET content = 'updated content' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+        // Verify FTS index reflects the update
+        let matches_updated: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'updated'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+
+        assert_eq!(matches_updated, Some(1));
+
+        // Verify old content is not in FTS
+        let matches_original: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'original'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+
+        assert_eq!(matches_original, None);
+    }
+
+    #[test]
+    fn fts_triggers_sync_on_note_delete() {
+        let db = Database::in_memory().unwrap();
+        let conn = db.connection();
+
+        // Insert and then delete a note
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (1, 'to be deleted')",
+            [],
+        )
+        .unwrap();
+
+        // Verify it's in FTS
+        let before_delete: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'deleted'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(before_delete, Some(1));
+
+        // Delete the note
+        conn.execute("DELETE FROM notes WHERE id = 1", []).unwrap();
+
+        // Verify it's removed from FTS
+        let after_delete: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'deleted'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+
+        assert_eq!(after_delete, None);
+    }
+
+    #[test]
+    fn fts_triggers_sync_on_note_tags_change() {
+        let db = Database::in_memory().unwrap();
+        let conn = db.connection();
+
+        // Insert note and tags
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO tags (id, name) VALUES (1, 'rust')", [])
+            .unwrap();
+        conn.execute("INSERT INTO tags (id, name) VALUES (2, 'python')", [])
+            .unwrap();
+
+        // Add first tag
+        conn.execute("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)", [])
+            .unwrap();
+
+        // Verify FTS contains the tag
+        let with_rust: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'rust'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(with_rust, Some(1));
+
+        // Add second tag
+        conn.execute("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 2)", [])
+            .unwrap();
+
+        // Verify both tags are in FTS
+        let with_python: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'python'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(with_python, Some(1));
+
+        // Remove first tag
+        conn.execute("DELETE FROM note_tags WHERE note_id = 1 AND tag_id = 1", [])
+            .unwrap();
+
+        // Verify first tag is removed from FTS
+        let rust_after_delete: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'rust'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(rust_after_delete, None);
+
+        // Verify second tag still exists in FTS
+        let python_after_delete: Option<i64> = conn
+            .query_row(
+                "SELECT note_id FROM notes_fts WHERE notes_fts MATCH 'python'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(python_after_delete, Some(1));
+    }
+
+    #[test]
+    fn fts_bm25_ranking_orders_by_relevance() {
+        let db = Database::in_memory().unwrap();
+        let conn = db.connection();
+
+        // Insert notes with different relevance for "rust"
+        // Note 1: "rust" appears once
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (1, 'learning rust programming')",
+            [],
+        )
+        .unwrap();
+
+        // Note 2: "rust" appears three times
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (2, 'rust rust rust is great')",
+            [],
+        )
+        .unwrap();
+
+        // Note 3: "rust" appears twice
+        conn.execute(
+            "INSERT INTO notes (id, content) VALUES (3, 'rust and more rust')",
+            [],
+        )
+        .unwrap();
+
+        // Query with BM25 ordering
+        let mut stmt = conn
+            .prepare(
+                "SELECT note_id, bm25(notes_fts) as score
+                 FROM notes_fts
+                 WHERE notes_fts MATCH 'rust'
+                 ORDER BY score",
+            )
+            .unwrap();
+
+        let note_ids: Vec<i64> = stmt
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // BM25 orders by ascending score (lower is better)
+        // Note 2 should be most relevant (first), then Note 3, then Note 1
+        assert_eq!(note_ids, vec![2, 3, 1]);
     }
 }

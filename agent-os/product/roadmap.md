@@ -30,7 +30,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 14. [x] Note text enhancement -- AI expands fragmentary notes into complete thoughts with clarified intent, storing both original and enhanced versions with provenance metadata `M`
 
-15. [ ] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command; foundation for dual-channel retrieval `M`
+15. [x] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command; foundation for dual-channel retrieval `M`
 
 16. [ ] Alias-expanded FTS -- Integrate tag_aliases into search queries, expanding "ML" to "ML OR machine-learning OR machine learning" before FTS5 matching; automatic synonym bridging `S`
 
