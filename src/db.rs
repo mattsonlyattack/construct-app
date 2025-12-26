@@ -305,4 +305,285 @@ mod tests {
             "idx_tag_aliases_canonical index should exist"
         );
     }
+
+    #[test]
+    fn tag_aliases_insert_with_all_metadata() {
+        let db = Database::in_memory().unwrap();
+
+        // Insert a canonical tag first
+        db.connection()
+            .execute(
+                "INSERT INTO tags (id, name) VALUES (1, 'machine-learning')",
+                [],
+            )
+            .unwrap();
+
+        // Insert alias with all metadata columns
+        let timestamp = 1735142400; // 2024-12-25 12:00:00 UTC
+        db.connection()
+            .execute(
+                "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at, model_version)
+                 VALUES ('ml', 1, 'llm', 0.85, ?1, 'deepseek-r1:8b')",
+                [timestamp],
+            )
+            .unwrap();
+
+        // Verify all columns are stored correctly
+        let (alias, tag_id, source, confidence, created, model): (
+            String,
+            i64,
+            String,
+            f64,
+            i64,
+            String,
+        ) = db
+            .connection()
+            .query_row(
+                "SELECT alias, canonical_tag_id, source, confidence, created_at, model_version
+                 FROM tag_aliases WHERE alias = 'ml'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(alias, "ml");
+        assert_eq!(tag_id, 1);
+        assert_eq!(source, "llm");
+        assert_eq!(confidence, 0.85);
+        assert_eq!(created, timestamp);
+        assert_eq!(model, "deepseek-r1:8b");
+    }
+
+    #[test]
+    fn tag_aliases_case_insensitive_lookup() {
+        let db = Database::in_memory().unwrap();
+
+        // Insert canonical tag
+        db.connection()
+            .execute(
+                "INSERT INTO tags (id, name) VALUES (1, 'machine-learning')",
+                [],
+            )
+            .unwrap();
+
+        // Insert lowercase alias
+        let timestamp = 1735142400;
+        db.connection()
+            .execute(
+                "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at)
+                 VALUES ('ml', 1, 'user', 1.0, ?1)",
+                [timestamp],
+            )
+            .unwrap();
+
+        // Lookup with different case variations
+        for variant in ["ml", "ML", "Ml", "mL"] {
+            let tag_id: i64 = db
+                .connection()
+                .query_row(
+                    "SELECT canonical_tag_id FROM tag_aliases WHERE alias = ?1",
+                    [variant],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(tag_id, 1, "Failed for variant: {}", variant);
+        }
+    }
+
+    #[test]
+    fn tag_aliases_cascade_delete_on_canonical_tag_removal() {
+        let db = Database::in_memory().unwrap();
+
+        // Insert canonical tag
+        db.connection()
+            .execute(
+                "INSERT INTO tags (id, name) VALUES (1, 'machine-learning')",
+                [],
+            )
+            .unwrap();
+
+        // Insert multiple aliases pointing to the same canonical tag
+        let timestamp = 1735142400;
+        for alias in ["ml", "ML-tag", "machine_learning"] {
+            db.connection()
+                .execute(
+                    "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at)
+                     VALUES (?1, 1, 'user', 1.0, ?2)",
+                    rusqlite::params![alias, timestamp],
+                )
+                .unwrap();
+        }
+
+        // Verify aliases exist
+        let count: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM tag_aliases", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+
+        // Delete canonical tag
+        db.connection()
+            .execute("DELETE FROM tags WHERE id = 1", [])
+            .unwrap();
+
+        // Verify all aliases were CASCADE deleted
+        let count_after: i64 = db
+            .connection()
+            .query_row("SELECT COUNT(*) FROM tag_aliases", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count_after, 0, "Aliases should be CASCADE deleted");
+    }
+
+    #[test]
+    fn tag_aliases_index_reverse_lookup_performance() {
+        let db = Database::in_memory().unwrap();
+
+        // Insert canonical tags
+        for i in 1..=5 {
+            db.connection()
+                .execute(
+                    "INSERT INTO tags (id, name) VALUES (?1, ?2)",
+                    rusqlite::params![i, format!("tag-{}", i)],
+                )
+                .unwrap();
+        }
+
+        // Insert aliases for multiple tags
+        let timestamp = 1735142400;
+        for tag_id in 1..=5 {
+            for j in 0..3 {
+                db.connection()
+                    .execute(
+                        "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at)
+                         VALUES (?1, ?2, 'user', 1.0, ?3)",
+                        rusqlite::params![format!("alias-{}-{}", tag_id, j), tag_id, timestamp],
+                    )
+                    .unwrap();
+            }
+        }
+
+        // Query aliases by canonical_tag_id (uses index)
+        let aliases: Vec<String> = db
+            .connection()
+            .prepare("SELECT alias FROM tag_aliases WHERE canonical_tag_id = 3 ORDER BY alias")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert_eq!(aliases.len(), 3);
+        assert_eq!(aliases[0], "alias-3-0");
+        assert_eq!(aliases[1], "alias-3-1");
+        assert_eq!(aliases[2], "alias-3-2");
+
+        // Verify index is being used (query plan should contain idx_tag_aliases_canonical)
+        let query_plan: String = db
+            .connection()
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT alias FROM tag_aliases WHERE canonical_tag_id = 3",
+                [],
+                |row| row.get::<_, String>(3), // detail column
+            )
+            .unwrap();
+
+        assert!(
+            query_plan.contains("idx_tag_aliases_canonical"),
+            "Index should be used for canonical_tag_id lookup. Query plan: {}",
+            query_plan
+        );
+    }
+
+    #[test]
+    fn tag_aliases_unique_alias_constraint() {
+        let db = Database::in_memory().unwrap();
+
+        // Insert canonical tags
+        db.connection()
+            .execute(
+                "INSERT INTO tags (id, name) VALUES (1, 'machine-learning')",
+                [],
+            )
+            .unwrap();
+        db.connection()
+            .execute(
+                "INSERT INTO tags (id, name) VALUES (2, 'artificial-intelligence')",
+                [],
+            )
+            .unwrap();
+
+        // Insert alias pointing to first tag
+        let timestamp = 1735142400;
+        db.connection()
+            .execute(
+                "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at)
+                 VALUES ('ml', 1, 'user', 1.0, ?1)",
+                [timestamp],
+            )
+            .unwrap();
+
+        // Attempt to insert duplicate alias (even with different canonical_tag_id)
+        let result = db.connection().execute(
+            "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at)
+             VALUES ('ml', 2, 'user', 1.0, ?1)",
+            [timestamp],
+        );
+
+        assert!(
+            result.is_err(),
+            "Duplicate alias should violate PRIMARY KEY constraint"
+        );
+
+        // Verify error is about uniqueness
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("UNIQUE") || error.to_string().contains("PRIMARY KEY"),
+            "Error should be about uniqueness: {}",
+            error
+        );
+    }
+
+    #[test]
+    fn tag_aliases_user_source_with_no_model_version() {
+        let db = Database::in_memory().unwrap();
+
+        // Insert canonical tag
+        db.connection()
+            .execute(
+                "INSERT INTO tags (id, name) VALUES (1, 'machine-learning')",
+                [],
+            )
+            .unwrap();
+
+        // Insert user alias without model_version (NULL)
+        let timestamp = 1735142400;
+        db.connection()
+            .execute(
+                "INSERT INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at, model_version)
+                 VALUES ('ml', 1, 'user', 1.0, ?1, NULL)",
+                [timestamp],
+            )
+            .unwrap();
+
+        // Verify model_version is NULL
+        let model_version: Option<String> = db
+            .connection()
+            .query_row(
+                "SELECT model_version FROM tag_aliases WHERE alias = 'ml'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(model_version, None);
+    }
 }

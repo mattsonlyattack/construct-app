@@ -34,9 +34,14 @@ CREATE TABLE IF NOT EXISTS note_tags (
 
 -- Tag aliases: SKOS-style prefLabel/altLabel synonym mapping
 -- Maps alternate forms ("ML", "machine-learning") to canonical tag IDs
+-- Includes provenance tracking: source (user/llm), confidence, timestamps, model version
 CREATE TABLE IF NOT EXISTS tag_aliases (
     alias TEXT PRIMARY KEY COLLATE NOCASE,
     canonical_tag_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    created_at INTEGER NOT NULL,
+    model_version TEXT,
     FOREIGN KEY (canonical_tag_id) REFERENCES tags(id) ON DELETE CASCADE
 );
 

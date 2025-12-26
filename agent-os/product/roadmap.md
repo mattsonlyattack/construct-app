@@ -22,9 +22,9 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 10. [ ] Fail-safe error handling -- Ensure LLM failures never block note capture; notes save successfully even if tagging fails, with graceful degradation `S`
 
-11. [ ] Tag normalization -- Implement consistent tag formatting (lowercase, hyphenation, deduplication) across manual and AI-generated tags `XS`
+11. [x] Tag normalization -- Implement consistent tag formatting (lowercase, hyphenation, deduplication) across manual and AI-generated tags `XS`
 
-12. [ ] Tag aliases -- Implement tag_aliases table mapping alternate forms to canonical tag IDs (SKOS prefLabel/altLabel pattern) to solve synonymy problems (car/auto/automobile), with LLM-suggested aliases and user confirmation workflows `M`
+12. [x] Tag aliases -- Implement tag_aliases table mapping alternate forms to canonical tag IDs (SKOS prefLabel/altLabel pattern) to solve synonymy problems (car/auto/automobile), with LLM-suggested aliases and user confirmation workflows `M`
 
 13. [ ] Structured logging -- Replace eprintln!/println! with tracing crate for structured logs with context (note IDs, model names, operation types), supporting RUST_LOG environment variable for log levels `S`
 

@@ -153,7 +153,6 @@ mod eval;
 mod normalizer;
 mod tagger;
 
-pub use eval::{compare_tags, load_corpus, precision_recall, jaccard_similarity, CorpusEntry};
+pub use eval::{CorpusEntry, compare_tags, jaccard_similarity, load_corpus, precision_recall};
 pub use normalizer::TagNormalizer;
 pub use tagger::{AutoTagger, AutoTaggerBuilder};
-

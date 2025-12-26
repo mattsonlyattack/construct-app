@@ -250,3 +250,50 @@ fn test_list_tags_filter_with_no_matching_notes() -> Result<()> {
 
     Ok(())
 }
+
+#[test]
+fn test_list_tags_filter_with_alias_resolves_to_canonical() -> Result<()> {
+    // E2E test: cons list --tags ml
+    // where "ml" is an alias for "machine-learning"
+
+    // Arrange: Create database with notes tagged with canonical form
+    let db = Database::in_memory()?;
+    let service = NoteService::new(db);
+
+    // Create notes with canonical tag "machine-learning"
+    service.create_note("Note about ML algorithms", Some(&["machine-learning"]))?;
+    service.create_note("Note about Python", Some(&["python"]))?;
+    service.create_note("Note about ML and Rust", Some(&["machine-learning", "rust"]))?;
+
+    // Create an alias: ml -> machine-learning
+    let ml_tag_id = service.get_or_create_tag("machine-learning")?;
+    service.create_alias("ml", ml_tag_id, "user", 1.0, None)?;
+
+    // Act: Filter by alias "ml" (should resolve to "machine-learning")
+    let results = list_notes(Some(10), Some("ml"), &service)?;
+
+    // Assert: Notes tagged with "machine-learning" are returned
+    assert_eq!(
+        results.len(),
+        2,
+        "should return 2 notes tagged with canonical form"
+    );
+
+    // Verify the correct notes are returned
+    assert!(
+        results[0].1.contains("ML algorithms") || results[0].1.contains("ML and Rust"),
+        "should return notes with machine-learning tag"
+    );
+    assert!(
+        results[1].1.contains("ML algorithms") || results[1].1.contains("ML and Rust"),
+        "should return notes with machine-learning tag"
+    );
+
+    // Verify the Python note is NOT included
+    assert!(
+        !results.iter().any(|(_, content, _)| content.contains("Python")),
+        "should not include Python note"
+    );
+
+    Ok(())
+}

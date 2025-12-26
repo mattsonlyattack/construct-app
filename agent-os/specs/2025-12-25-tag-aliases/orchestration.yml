@@ -1,0 +1,21 @@
+task_groups:
+  - name: Schema Redesign and Alias Data Model
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: NoteService Alias Methods and Resolution Logic
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: CLI Commands for Tag Alias Management
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: LLM-Suggested Alias Auto-Creation
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all

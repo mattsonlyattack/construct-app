@@ -324,9 +324,7 @@ fn list_notes_with_normalized_tag_filter_works() {
         ..Default::default()
     };
 
-    let notes = service
-        .list_notes(options)
-        .expect("failed to list notes");
+    let notes = service.list_notes(options).expect("failed to list notes");
 
     assert_eq!(notes.len(), 2, "should find both notes with normalized tag");
 }
@@ -340,7 +338,11 @@ fn create_note_with_duplicate_tag_variants_creates_single_normalized_tag() {
         .create_note("Test note", Some(&["Rust", "RUST", "rust"]))
         .expect("failed to create note");
 
-    assert_eq!(note.tags().len(), 1, "duplicate variants should create one tag");
+    assert_eq!(
+        note.tags().len(),
+        1,
+        "duplicate variants should create one tag"
+    );
 
     // Verify only one tag exists in database
     let conn = service.database().connection();
@@ -375,7 +377,11 @@ fn create_note_with_special_characters_strips_and_normalizes() {
         .expect("failed to collect tag names");
 
     tag_names.sort();
-    assert_eq!(tag_names, vec!["c", "nodejs"], "special chars should be stripped");
+    assert_eq!(
+        tag_names,
+        vec!["c", "nodejs"],
+        "special chars should be stripped"
+    );
 }
 
 #[test]
@@ -508,7 +514,10 @@ fn mixed_case_deduplication_works_across_user_and_llm_tags() {
         })
         .expect("failed to count tags");
 
-    assert_eq!(count, 1, "user and LLM tags should deduplicate to same normalized tag");
+    assert_eq!(
+        count, 1,
+        "user and LLM tags should deduplicate to same normalized tag"
+    );
 
     // Verify note still has 1 tag assignment (second insert is ignored due to PRIMARY KEY constraint)
     let retrieved = service
@@ -573,9 +582,7 @@ fn end_to_end_normalization_workflow_create_retrieve_verify() {
         tags: Some(vec!["machine-learning".to_string()]),
         ..Default::default()
     };
-    let notes = service
-        .list_notes(options)
-        .expect("failed to list notes");
+    let notes = service.list_notes(options).expect("failed to list notes");
     assert_eq!(notes.len(), 1, "should find note by normalized tag");
     assert_eq!(notes[0].id(), note.id());
 }
@@ -869,3 +876,379 @@ fn timestamp_conversion_maintains_accuracy() {
     );
 }
 
+// --- Tag Alias Tests (Task Group 2: Alias Service Methods) ---
+
+#[test]
+fn resolve_alias_returns_canonical_tag_id_for_existing_alias() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a canonical tag
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create an alias for it
+    service
+        .create_alias("ml", canonical_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Resolve the alias
+    let resolved = service
+        .resolve_alias("ml")
+        .expect("failed to resolve alias")
+        .expect("alias should exist");
+
+    assert_eq!(
+        resolved, canonical_tag_id,
+        "alias should resolve to canonical tag ID"
+    );
+}
+
+#[test]
+fn resolve_alias_returns_none_for_non_existent_alias() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    let result = service
+        .resolve_alias("non-existent-alias")
+        .expect("failed to resolve alias");
+
+    assert_eq!(
+        result, None,
+        "non-existent alias should return None"
+    );
+}
+
+#[test]
+fn create_alias_with_user_source_stores_correctly() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a canonical tag
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create an alias
+    service
+        .create_alias("ml", canonical_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Verify it's stored correctly
+    let aliases = service.list_aliases().expect("failed to list aliases");
+
+    assert_eq!(aliases.len(), 1, "should have 1 alias");
+    assert_eq!(aliases[0].alias(), "ml");
+    assert_eq!(aliases[0].canonical_tag_id(), canonical_tag_id);
+    assert_eq!(aliases[0].source(), "user");
+    assert_eq!(aliases[0].confidence(), 1.0);
+    assert_eq!(aliases[0].model_version(), None);
+}
+
+#[test]
+fn create_alias_with_llm_source_includes_model_version() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a canonical tag
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create an LLM alias
+    service
+        .create_alias("ml", canonical_tag_id, "llm", 0.85, Some("deepseek-r1:8b"))
+        .expect("failed to create alias");
+
+    // Verify it's stored correctly
+    let aliases = service.list_aliases().expect("failed to list aliases");
+
+    assert_eq!(aliases.len(), 1, "should have 1 alias");
+    assert_eq!(aliases[0].alias(), "ml");
+    assert_eq!(aliases[0].source(), "llm");
+    assert_eq!(aliases[0].confidence(), 0.85);
+    assert_eq!(aliases[0].model_version(), Some("deepseek-r1:8b"));
+}
+
+#[test]
+fn create_alias_prevents_alias_to_alias_chains() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+    let conn = service.database().connection();
+
+    // Create two canonical tags
+    let ml_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create ml tag");
+
+    // Create an alias "ml" pointing to machine-learning
+    service
+        .create_alias("ml", ml_tag_id, "user", 1.0, None)
+        .expect("failed to create ml alias");
+
+    // Manually create a tag with the name "ml" in the tags table (bypassing get_or_create_tag)
+    // This simulates a scenario where a tag name conflicts with an alias
+    conn.execute("INSERT INTO tags (name) VALUES (?1)", ["ml"])
+        .expect("failed to insert ml tag");
+
+    let ml_as_tag_id = conn.last_insert_rowid();
+
+    // Try to create an alias where the canonical_tag_id points to a tag whose name is "ml"
+    // which is itself an alias - this should fail
+    let result = service.create_alias("machine-learning-alias", TagId::new(ml_as_tag_id), "user", 1.0, None);
+
+    assert!(
+        result.is_err(),
+        "creating alias where canonical tag name is itself an alias should fail"
+    );
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("is itself an alias"),
+        "error message should indicate tag is an alias: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn list_aliases_returns_all_aliases_grouped_by_canonical_tag() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tags
+    let ml_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create ml tag");
+    let ai_tag_id = service
+        .get_or_create_tag("artificial-intelligence")
+        .expect("failed to create ai tag");
+
+    // Create aliases
+    service
+        .create_alias("ml", ml_tag_id, "user", 1.0, None)
+        .expect("failed to create ml alias");
+    service
+        .create_alias("ai", ai_tag_id, "user", 1.0, None)
+        .expect("failed to create ai alias");
+    service
+        .create_alias("machine-learning-abbrev", ml_tag_id, "llm", 0.9, Some("model"))
+        .expect("failed to create machine-learning-abbrev alias");
+
+    // List all aliases
+    let aliases = service.list_aliases().expect("failed to list aliases");
+
+    assert_eq!(aliases.len(), 3, "should have 3 aliases");
+
+    // Verify they're ordered by canonical tag name, then by alias name
+    let alias_names: Vec<&str> = aliases.iter().map(|a| a.alias()).collect();
+    assert!(
+        alias_names.contains(&"ml"),
+        "should contain ml alias"
+    );
+    assert!(
+        alias_names.contains(&"ai"),
+        "should contain ai alias"
+    );
+    assert!(
+        alias_names.contains(&"machine-learning-abbrev"),
+        "should contain machine-learning-abbrev alias"
+    );
+}
+
+#[test]
+fn remove_alias_deletes_mapping_idempotently() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a canonical tag and alias
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", canonical_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Verify alias exists
+    assert!(
+        service.resolve_alias("ml").expect("failed to resolve").is_some(),
+        "alias should exist before removal"
+    );
+
+    // Remove the alias
+    service
+        .remove_alias("ml")
+        .expect("failed to remove alias");
+
+    // Verify it's gone
+    assert!(
+        service.resolve_alias("ml").expect("failed to resolve").is_none(),
+        "alias should not exist after removal"
+    );
+
+    // Remove again (idempotent)
+    service
+        .remove_alias("ml")
+        .expect("second remove should succeed (idempotent)");
+
+    // Remove non-existent alias (also idempotent)
+    service
+        .remove_alias("non-existent")
+        .expect("removing non-existent alias should succeed (idempotent)");
+}
+
+#[test]
+fn alias_lookup_happens_after_normalization() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a canonical tag
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create an alias with normalized form
+    service
+        .create_alias("ml", canonical_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Resolve using different case (should normalize before lookup)
+    let resolved_lower = service
+        .resolve_alias("ml")
+        .expect("failed to resolve")
+        .expect("should find alias");
+
+    let resolved_upper = service
+        .resolve_alias("ML")
+        .expect("failed to resolve")
+        .expect("should find alias with different case");
+
+    assert_eq!(
+        resolved_lower, resolved_upper,
+        "case-insensitive lookup should work"
+    );
+    assert_eq!(
+        resolved_lower, canonical_tag_id,
+        "both should resolve to canonical tag"
+    );
+}
+
+// --- AutoTagger Alias Integration Tests ---
+
+#[test]
+fn llm_suggested_alias_auto_creation_workflow() {
+    // Integration test simulating auto_tag_note creating an LLM-suggested alias
+    // when LLM suggests a tag that could be an alias for an existing tag
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Arrange: Pre-existing canonical tag "machine-learning" exists
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create canonical tag");
+
+    // Act: Simulate LLM suggesting "ml" as a tag (detected as alias opportunity)
+    // This mimics the find_alias_opportunity + create_alias flow in auto_tag_note
+    let suggested_tag = "ml";
+    let model_version = "deepseek-r1:8b";
+    let confidence = 0.85;
+
+    // Create the LLM-suggested alias
+    service
+        .create_alias(suggested_tag, canonical_tag_id, "llm", confidence, Some(model_version))
+        .expect("failed to create LLM alias");
+
+    // Assert: Alias was created with correct provenance
+    let alias_info_list = service.list_aliases().expect("failed to list aliases");
+    assert_eq!(alias_info_list.len(), 1, "should have 1 alias");
+
+    let alias_info = &alias_info_list[0];
+    assert_eq!(alias_info.alias(), "ml");
+    assert_eq!(alias_info.canonical_tag_id(), canonical_tag_id);
+    assert_eq!(alias_info.source(), "llm");
+    assert_eq!(alias_info.confidence(), confidence);
+    assert_eq!(alias_info.model_version(), Some(model_version));
+}
+
+#[test]
+fn user_creates_alias_then_adds_note_with_that_tag() {
+    // Integration test: User creates an alias, then adds a note using that alias
+    // Verify the alias resolution works end-to-end
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Arrange: User creates an alias via CLI (cons tag-alias add ml machine-learning)
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create canonical tag");
+    service
+        .create_alias("ml", canonical_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Act: User adds a note with the alias (cons add --tags ml "...")
+    let note = service
+        .create_note("Learning about ML", Some(&["ml"]))
+        .expect("failed to create note");
+
+    // Assert: Note is tagged with canonical tag, not alias
+    assert_eq!(note.tags().len(), 1, "note should have 1 tag");
+
+    let conn = service.database().connection();
+    let tag_name: String = conn
+        .query_row(
+            "SELECT name FROM tags WHERE id = ?1",
+            [note.tags()[0].tag_id().get()],
+            |row| row.get(0),
+        )
+        .expect("failed to get tag name");
+
+    assert_eq!(
+        tag_name, "machine-learning",
+        "note should be tagged with canonical form"
+    );
+}
+
+#[test]
+fn alias_removal_then_tag_creation_with_same_name() {
+    // Integration test: After removing an alias, the alias name can be used as a new tag
+    // This verifies alias removal doesn't leave orphaned constraints
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Arrange: Create an alias
+    let canonical_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create canonical tag");
+    service
+        .create_alias("ml", canonical_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Act: Remove the alias
+    service
+        .remove_alias("ml")
+        .expect("failed to remove alias");
+
+    // Now create a new tag with the name "ml" (not an alias, a real tag)
+    let new_ml_tag_id = service
+        .get_or_create_tag("ml")
+        .expect("failed to create new ml tag");
+
+    // Assert: New tag was created (not resolved to old canonical)
+    assert_ne!(
+        new_ml_tag_id, canonical_tag_id,
+        "ml should be a new tag, not resolved to old canonical"
+    );
+
+    // Verify the new tag exists in tags table
+    let conn = service.database().connection();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tags WHERE name = 'ml'", [], |row| {
+            row.get(0)
+        })
+        .expect("failed to count ml tags");
+
+    assert_eq!(count, 1, "ml tag should exist");
+}

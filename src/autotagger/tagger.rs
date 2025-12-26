@@ -314,7 +314,6 @@ mod tests {
         response: String,
     }
 
-    
     impl OllamaClientTrait for MockOllamaClient {
         fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
             Ok(self.response.clone())
@@ -462,7 +461,6 @@ I hope this helps!"#;
     fn test_ollama_error_propagates_correctly() {
         struct FailingMockClient;
 
-        
         impl OllamaClientTrait for FailingMockClient {
             fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
                 Err(OllamaError::Http { status: 500 })
@@ -493,9 +491,7 @@ These tags represent the main topics."#
         };
         let tagger = AutoTagger::new(Arc::new(mock));
 
-        let result = tagger
-            .generate_tags("test-model", "Learning async Rust with tokio")
-            ;
+        let result = tagger.generate_tags("test-model", "Learning async Rust with tokio");
 
         assert!(result.is_ok());
         let tags = result.unwrap();
@@ -518,9 +514,8 @@ These tags represent the main topics."#
             };
             let tagger = AutoTagger::new(Arc::new(mock));
 
-            let result = tagger
-                .generate_tags("deepseek-r1:8b", "Writing integration tests for Rust")
-                ;
+            let result =
+                tagger.generate_tags("deepseek-r1:8b", "Writing integration tests for Rust");
 
             assert!(result.is_ok());
             let tags = result.unwrap();
@@ -536,13 +531,8 @@ These tags represent the main topics."#
         fn test_autotagger_handles_ollama_error_gracefully() {
             struct ErrorMockClient;
 
-            
             impl OllamaClientTrait for ErrorMockClient {
-                fn generate(
-                    &self,
-                    _model: &str,
-                    _prompt: &str,
-                ) -> Result<String, OllamaError> {
+                fn generate(&self, _model: &str, _prompt: &str) -> Result<String, OllamaError> {
                     Err(OllamaError::Network(
                         reqwest::Client::new()
                             .get("not-a-valid-url")
@@ -603,13 +593,8 @@ I focused on the main topics discussed."#
                 captured_model: Mutex<Option<String>>,
             }
 
-            
             impl OllamaClientTrait for ModelCapturingMock {
-                fn generate(
-                    &self,
-                    model: &str,
-                    _prompt: &str,
-                ) -> Result<String, OllamaError> {
+                fn generate(&self, model: &str, _prompt: &str) -> Result<String, OllamaError> {
                     *self.captured_model.lock().unwrap() = Some(model.to_string());
                     Ok(r#"{"test": 0.9}"#.to_string())
                 }
@@ -635,9 +620,7 @@ I focused on the main topics discussed."#
                 response: r#"{"rust": 0.9}"#.to_string(),
             };
 
-            let tagger = AutoTaggerBuilder::new()
-                .client(Arc::new(mock))
-                .build();
+            let tagger = AutoTaggerBuilder::new().client(Arc::new(mock)).build();
 
             let result = tagger.generate_tags("test-model", "test content");
             assert!(result.is_ok());

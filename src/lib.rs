@@ -6,7 +6,7 @@ pub mod service;
 
 pub use autotagger::{AutoTagger, AutoTaggerBuilder, TagNormalizer};
 pub use db::Database;
-pub use models::{Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
+pub use models::{AliasInfo, Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
 pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
 pub use service::{ListNotesOptions, NoteService, SortOrder};
 

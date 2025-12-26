@@ -1,4 +1,7 @@
-use crate::{autotagger::TagNormalizer, Database, Note, NoteBuilder, NoteId, TagAssignment, TagId, TagSource};
+use crate::{
+    AliasInfo, Database, Note, NoteBuilder, NoteId, TagAssignment, TagId, TagSource,
+    autotagger::TagNormalizer,
+};
 use anyhow::Result;
 use rusqlite::OptionalExtension;
 use time::OffsetDateTime;
@@ -297,19 +300,25 @@ impl NoteService {
         Ok(())
     }
 
-    /// Helper method to get or create a tag by name.
+    /// Gets or creates a tag by name.
     ///
     /// Queries the tags table by name (case-insensitive via COLLATE NOCASE).
-    /// If found, returns the existing TagId. If not found, creates a new tag
+    /// If an alias exists for the normalized name, returns the canonical tag ID.
+    /// If the tag exists, returns its TagId. If not found, creates a new tag
     /// and returns its TagId.
     ///
     /// # Arguments
     ///
     /// * `name` - The tag name to get or create
-    fn get_or_create_tag(&self, name: &str) -> Result<TagId> {
+    pub fn get_or_create_tag(&self, name: &str) -> Result<TagId> {
         // Normalize tag name before database operations
         let normalized = TagNormalizer::normalize_tag(name);
         let conn = self.db.connection();
+
+        // Check if this name is an alias first
+        if let Some(canonical_tag_id) = self.resolve_alias(&normalized)? {
+            return Ok(canonical_tag_id);
+        }
 
         // Try to find existing tag (case-insensitive)
         let existing: Option<i64> = conn
@@ -460,12 +469,33 @@ impl NoteService {
                 // Empty tag filter means no notes match
                 Vec::new()
             } else {
+                // Resolve aliases for each tag filter independently
+                let mut resolved_tag_names = Vec::new();
+                for tag_name in &tag_names {
+                    // Normalize the tag name
+                    let normalized = TagNormalizer::normalize_tag(tag_name);
+
+                    // Check if it's an alias
+                    if let Some(canonical_tag_id) = self.resolve_alias(&normalized)? {
+                        // It's an alias - get the canonical tag name
+                        let canonical_name: String = conn.query_row(
+                            "SELECT name FROM tags WHERE id = ?1",
+                            [canonical_tag_id.get()],
+                            |row| row.get(0),
+                        )?;
+                        resolved_tag_names.push(canonical_name);
+                    } else {
+                        // Not an alias - use the normalized name
+                        resolved_tag_names.push(normalized);
+                    }
+                }
+
                 // Query for notes that have ALL specified tags (AND logic)
                 // We use HAVING COUNT to ensure the note has all tags
-                let tag_count = tag_names.len();
+                let tag_count = resolved_tag_names.len();
 
                 // Build placeholders for the IN clause
-                let placeholders: Vec<&str> = tag_names.iter().map(|_| "?").collect();
+                let placeholders: Vec<&str> = resolved_tag_names.iter().map(|_| "?").collect();
                 let in_clause = placeholders.join(", ");
 
                 let order_clause = match options.order {
@@ -493,7 +523,7 @@ impl NoteService {
 
                 // Bind tag names and then the count
                 let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
-                for tag_name in &tag_names {
+                for tag_name in &resolved_tag_names {
                     params.push(tag_name);
                 }
                 params.push(&tag_count);
@@ -544,6 +574,277 @@ impl NoteService {
         }
 
         Ok(notes)
+    }
+
+    /// Resolves an alias to its canonical tag ID.
+    ///
+    /// Normalizes the input alias name before lookup using COLLATE NOCASE matching.
+    /// Returns `None` if no alias exists with the given name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The alias name to resolve
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create a canonical tag and alias
+    /// let canonical_tag_id = service.get_or_create_tag("machine-learning")?;
+    /// service.create_alias("ml", canonical_tag_id, "user", 1.0, None)?;
+    ///
+    /// // Resolve the alias
+    /// let resolved = service.resolve_alias("ml")?;
+    /// assert_eq!(resolved, Some(canonical_tag_id));
+    ///
+    /// // Non-existent alias returns None
+    /// assert_eq!(service.resolve_alias("non-existent")?, None);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn resolve_alias(&self, name: &str) -> Result<Option<TagId>> {
+        // Normalize input before lookup
+        let normalized = TagNormalizer::normalize_tag(name);
+        let conn = self.db.connection();
+
+        // Query tag_aliases with COLLATE NOCASE matching
+        let result: Option<i64> = conn
+            .query_row(
+                "SELECT canonical_tag_id FROM tag_aliases WHERE alias = ?1 COLLATE NOCASE",
+                [&normalized],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        Ok(result.map(TagId::new))
+    }
+
+    /// Creates an alias mapping an alternate name to a canonical tag.
+    ///
+    /// Normalizes the alias before storage and verifies that:
+    /// - The canonical tag exists
+    /// - The canonical tag is not itself an alias (prevents chains)
+    ///
+    /// Uses INSERT OR REPLACE for idempotent updates.
+    ///
+    /// # Arguments
+    ///
+    /// * `alias` - The alias name to create
+    /// * `canonical_tag_id` - The canonical tag this alias resolves to
+    /// * `source` - The source of the alias ("user" or "llm")
+    /// * `confidence` - Confidence score (0.0-1.0)
+    /// * `model_version` - Optional model version for LLM-created aliases
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create a canonical tag
+    /// let canonical_tag_id = service.get_or_create_tag("machine-learning")?;
+    ///
+    /// // Create a user alias
+    /// service.create_alias("ml", canonical_tag_id, "user", 1.0, None)?;
+    ///
+    /// // Create an LLM alias
+    /// service.create_alias("ML", canonical_tag_id, "llm", 0.85, Some("deepseek-r1:8b"))?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_alias(
+        &self,
+        alias: &str,
+        canonical_tag_id: TagId,
+        source: &str,
+        confidence: f64,
+        model_version: Option<&str>,
+    ) -> Result<()> {
+        // Normalize alias before storage
+        let normalized_alias = TagNormalizer::normalize_tag(alias);
+        let conn = self.db.connection();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+
+        // Verify canonical_tag_id exists in tags table
+        let tag_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tags WHERE id = ?1)",
+            [canonical_tag_id.get()],
+            |row| row.get(0),
+        )?;
+
+        if !tag_exists {
+            anyhow::bail!("Canonical tag with id {} does not exist", canonical_tag_id);
+        }
+
+        // Verify the tag name isn't already used as an alias (prevent chains)
+        // Get the tag name for the canonical_tag_id
+        let tag_name: String = conn.query_row(
+            "SELECT name FROM tags WHERE id = ?1",
+            [canonical_tag_id.get()],
+            |row| row.get(0),
+        )?;
+
+        // Check if this tag name is already an alias
+        let is_alias: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tag_aliases WHERE alias = ?1 COLLATE NOCASE)",
+            [&tag_name],
+            |row| row.get(0),
+        )?;
+
+        if is_alias {
+            anyhow::bail!(
+                "Cannot create alias: tag '{}' (id {}) is itself an alias",
+                tag_name,
+                canonical_tag_id
+            );
+        }
+
+        // Insert with INSERT OR REPLACE for idempotent updates
+        conn.execute(
+            "INSERT OR REPLACE INTO tag_aliases (alias, canonical_tag_id, source, confidence, created_at, model_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                normalized_alias,
+                canonical_tag_id.get(),
+                source,
+                confidence,
+                now,
+                model_version,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Lists all tag aliases.
+    ///
+    /// Returns aliases with their metadata, ordered by canonical tag name
+    /// then by alias name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create canonical tags and aliases
+    /// let ml_tag = service.get_or_create_tag("machine-learning")?;
+    /// service.create_alias("ml", ml_tag, "user", 1.0, None)?;
+    ///
+    /// let ai_tag = service.get_or_create_tag("artificial-intelligence")?;
+    /// service.create_alias("ai", ai_tag, "user", 1.0, None)?;
+    ///
+    /// // List all aliases
+    /// let aliases = service.list_aliases()?;
+    /// assert_eq!(aliases.len(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_aliases(&self) -> Result<Vec<AliasInfo>> {
+        let conn = self.db.connection();
+
+        let mut stmt = conn.prepare(
+            "SELECT ta.alias, ta.canonical_tag_id, ta.source, ta.confidence, ta.created_at, ta.model_version, t.name
+             FROM tag_aliases ta
+             JOIN tags t ON ta.canonical_tag_id = t.id
+             ORDER BY t.name, ta.alias",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let alias: String = row.get(0)?;
+            let canonical_tag_id: i64 = row.get(1)?;
+            let source: String = row.get(2)?;
+            let confidence: f64 = row.get(3)?;
+            let created_at: i64 = row.get(4)?;
+            let model_version: Option<String> = row.get(5)?;
+
+            Ok((
+                alias,
+                canonical_tag_id,
+                source,
+                confidence,
+                created_at,
+                model_version,
+            ))
+        })?;
+
+        let mut aliases = Vec::new();
+        for row_result in rows {
+            let (alias, canonical_tag_id, source, confidence, created_at, model_version) =
+                row_result?;
+
+            let alias_info = AliasInfo::new(
+                alias,
+                TagId::new(canonical_tag_id),
+                source,
+                confidence,
+                OffsetDateTime::from_unix_timestamp(created_at)?,
+                model_version,
+            );
+
+            aliases.push(alias_info);
+        }
+
+        Ok(aliases)
+    }
+
+    /// Removes an alias mapping.
+    ///
+    /// Normalizes the alias before deletion using COLLATE NOCASE matching.
+    /// This operation is idempotent: removing a non-existent alias succeeds
+    /// without error.
+    ///
+    /// # Arguments
+    ///
+    /// * `alias` - The alias name to remove
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create a canonical tag and alias
+    /// let canonical_tag_id = service.get_or_create_tag("machine-learning")?;
+    /// service.create_alias("ml", canonical_tag_id, "user", 1.0, None)?;
+    ///
+    /// // Remove the alias
+    /// service.remove_alias("ml")?;
+    ///
+    /// // Verify it's gone
+    /// assert_eq!(service.resolve_alias("ml")?, None);
+    ///
+    /// // Removing again is idempotent
+    /// service.remove_alias("ml")?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn remove_alias(&self, alias: &str) -> Result<()> {
+        // Normalize alias before deletion
+        let normalized = TagNormalizer::normalize_tag(alias);
+        let conn = self.db.connection();
+
+        // Delete with COLLATE NOCASE matching (idempotent)
+        conn.execute(
+            "DELETE FROM tag_aliases WHERE alias = ?1 COLLATE NOCASE",
+            [&normalized],
+        )?;
+
+        Ok(())
     }
 }
 

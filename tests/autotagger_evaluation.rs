@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use cons::autotagger::{AutoTaggerBuilder, load_corpus, compare_tags};
+use cons::autotagger::{AutoTaggerBuilder, compare_tags, load_corpus};
 use cons::ollama::{OllamaClientTrait, OllamaError};
 
 /// Mock Ollama client for testing.
@@ -28,7 +28,7 @@ impl OllamaClientTrait for MockOllamaClient {
 fn test_corpus_file_parses_successfully() {
     let result = load_corpus(None);
     assert!(result.is_ok(), "Corpus file should parse successfully");
-    
+
     let entries = result.unwrap();
     assert!(
         entries.len() >= 5 && entries.len() <= 8,
@@ -38,21 +38,33 @@ fn test_corpus_file_parses_successfully() {
 
     // Verify each entry has required fields
     for (i, entry) in entries.iter().enumerate() {
-        assert!(!entry.content.is_empty(), "Entry {}: content should not be empty", i);
-        assert!(!entry.expected_tags.is_empty(), "Entry {}: expected_tags should not be empty", i);
-        assert!(!entry.notes.is_empty(), "Entry {}: notes should not be empty", i);
+        assert!(
+            !entry.content.is_empty(),
+            "Entry {}: content should not be empty",
+            i
+        );
+        assert!(
+            !entry.expected_tags.is_empty(),
+            "Entry {}: expected_tags should not be empty",
+            i
+        );
+        assert!(
+            !entry.notes.is_empty(),
+            "Entry {}: notes should not be empty",
+            i
+        );
     }
 }
 
 #[test]
 fn test_corpus_includes_aboutness_vs_mention_cases() {
     let entries = load_corpus(None).unwrap();
-    
+
     // Find the debugging/Python entry which tests "aboutness vs mention"
-    let aboutness_entry = entries.iter().find(|e| {
-        e.content.contains("Debugging") && e.content.contains("Python")
-    });
-    
+    let aboutness_entry = entries
+        .iter()
+        .find(|e| e.content.contains("Debugging") && e.content.contains("Python"));
+
     assert!(
         aboutness_entry.is_some(),
         "Corpus should include an entry testing 'aboutness vs mention' distinction"
@@ -73,30 +85,30 @@ fn test_tag_extraction_on_sample_with_mock() {
     let sample = &entries[0]; // Use first entry
 
     // Create mock client that returns expected JSON format
-    let mock_response = format!(
-        r#"{{"rust": 0.95, "async": 0.9, "tokio": 0.85, "concurrency": 0.75}}"#
-    );
+    let mock_response =
+        format!(r#"{{"rust": 0.95, "async": 0.9, "tokio": 0.85, "concurrency": 0.75}}"#);
     let mock = MockOllamaClient {
         response: mock_response,
     };
 
     // Create tagger with mock client
-    let tagger = AutoTaggerBuilder::new()
-        .client(Arc::new(mock))
-        .build();
+    let tagger = AutoTaggerBuilder::new().client(Arc::new(mock)).build();
 
     // Generate tags
     let result = tagger.generate_tags("test-model", &sample.content);
     assert!(result.is_ok(), "Tag generation should succeed");
 
     let tags = result.unwrap();
-    
+
     // Verify we got some tags
     assert!(!tags.is_empty(), "Should extract at least some tags");
-    
+
     // Use eval.rs metrics to verify quality (mock should be perfect)
     let (jaccard, precision, recall) = compare_tags(&sample.expected_tags, &tags);
-    assert_eq!(jaccard, 1.0, "Mock should produce perfect Jaccard similarity");
+    assert_eq!(
+        jaccard, 1.0,
+        "Mock should produce perfect Jaccard similarity"
+    );
     assert_eq!(precision, 1.0, "Mock should produce perfect precision");
     assert_eq!(recall, 1.0, "Mock should produce perfect recall");
 }
@@ -126,9 +138,7 @@ fn test_real_ollama_integration() {
     };
 
     // Create tagger
-    let tagger = AutoTaggerBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    let tagger = AutoTaggerBuilder::new().client(Arc::new(client)).build();
 
     // Load corpus and test with first entry
     let entries = load_corpus(None).unwrap();
@@ -146,15 +156,15 @@ fn test_real_ollama_integration() {
             for (tag, confidence) in &tags {
                 println!("  {}: {:.2}", tag, confidence);
             }
-            
+
             // Use eval.rs to check quality - this is where regressions would be caught
             let (jaccard, precision, recall) = compare_tags(&sample.expected_tags, &tags);
-            
+
             println!("Quality metrics:");
             println!("  Jaccard similarity: {:.3}", jaccard);
             println!("  Precision: {:.3}", precision);
             println!("  Recall: {:.3}", recall);
-            
+
             // Quality thresholds - fail if quality drops too low (regression detection)
             // These thresholds are intentionally conservative - adjust based on baseline
             assert!(
@@ -174,7 +184,10 @@ fn test_real_ollama_integration() {
             );
         }
         Err(e) => {
-            eprintln!("Ollama call failed (this is OK if Ollama is not running): {}", e);
+            eprintln!(
+                "Ollama call failed (this is OK if Ollama is not running): {}",
+                e
+            );
             // Don't fail the test - this is expected if Ollama is not available
         }
     }
@@ -207,14 +220,16 @@ fn test_evaluate_full_corpus() {
         }
     };
 
-    let tagger = AutoTaggerBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    let tagger = AutoTaggerBuilder::new().client(Arc::new(client)).build();
 
     let entries = load_corpus(None).unwrap();
     let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "gemma3:4b".to_string());
 
-    println!("Evaluating {} corpus entries with model: {}", entries.len(), model);
+    println!(
+        "Evaluating {} corpus entries with model: {}",
+        entries.len(),
+        model
+    );
 
     let mut total_jaccard = 0.0;
     let mut total_precision = 0.0;
@@ -225,7 +240,7 @@ fn test_evaluate_full_corpus() {
         match tagger.generate_tags(&model, &entry.content) {
             Ok(tags) => {
                 let (jaccard, precision, recall) = compare_tags(&entry.expected_tags, &tags);
-                
+
                 total_jaccard += jaccard;
                 total_precision += precision;
                 total_recall += recall;
@@ -278,4 +293,3 @@ fn test_evaluate_full_corpus() {
         avg_recall
     );
 }
-

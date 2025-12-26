@@ -145,30 +145,19 @@ pub fn jaccard_similarity(expected: &HashSet<String>, actual: &HashSet<String>) 
 /// assert!((precision - 0.667).abs() < 0.01);
 /// assert!((recall - 0.667).abs() < 0.01);
 /// ```
-pub fn precision_recall(
-    expected: &HashSet<String>,
-    actual: &HashSet<String>,
-) -> (f64, f64) {
+pub fn precision_recall(expected: &HashSet<String>, actual: &HashSet<String>) -> (f64, f64) {
     let true_positives = expected.intersection(actual).count();
     let false_positives = actual.difference(expected).count();
     let false_negatives = expected.difference(actual).count();
 
     let precision = if actual.is_empty() {
-        if expected.is_empty() {
-            1.0
-        } else {
-            0.0
-        }
+        if expected.is_empty() { 1.0 } else { 0.0 }
     } else {
         true_positives as f64 / (true_positives + false_positives) as f64
     };
 
     let recall = if expected.is_empty() {
-        if actual.is_empty() {
-            1.0
-        } else {
-            0.0
-        }
+        if actual.is_empty() { 1.0 } else { 0.0 }
     } else {
         true_positives as f64 / (true_positives + false_negatives) as f64
     };
@@ -186,10 +175,7 @@ pub fn precision_recall(
 /// # Returns
 ///
 /// Tuple of (jaccard_similarity, precision, recall) scores.
-pub fn compare_tags(
-    expected: &[String],
-    actual: &HashMap<String, f64>,
-) -> (f64, f64, f64) {
+pub fn compare_tags(expected: &[String], actual: &HashMap<String, f64>) -> (f64, f64, f64) {
     let expected_set: HashSet<String> = expected.iter().cloned().collect();
     let actual_set: HashSet<String> = actual.keys().cloned().collect();
 
@@ -270,5 +256,3 @@ mod tests {
         assert!((recall - 0.667).abs() < 0.01); // 2 TP, 1 FN
     }
 }
-
-
