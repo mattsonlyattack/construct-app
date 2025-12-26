@@ -7,7 +7,11 @@ use super::{NoteId, TagAssignment};
 ///
 /// Notes are the primary unit of knowledge capture in the system. Each note
 /// contains freeform text content and zero or more tag assignments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Enhancement fields store AI-expanded versions of fragmentary notes with
+/// provenance metadata (model, confidence, timestamp). All enhancement fields
+/// are optional and default to None when enhancement is unavailable.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Note {
     id: NoteId,
     content: String,
@@ -16,6 +20,16 @@ pub struct Note {
     #[serde(with = "time::serde::rfc3339")]
     updated_at: OffsetDateTime,
     tags: Vec<TagAssignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_enhanced: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[serde(with = "time::serde::rfc3339::option")]
+    enhanced_at: Option<OffsetDateTime>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enhancement_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enhancement_confidence: Option<f64>,
 }
 
 impl Note {
@@ -53,6 +67,26 @@ impl Note {
     pub fn add_tag(&mut self, tag: TagAssignment) {
         self.tags.push(tag);
     }
+
+    /// Returns the enhanced content, if available.
+    pub fn content_enhanced(&self) -> Option<&str> {
+        self.content_enhanced.as_deref()
+    }
+
+    /// Returns when this note was enhanced, if available.
+    pub fn enhanced_at(&self) -> Option<OffsetDateTime> {
+        self.enhanced_at
+    }
+
+    /// Returns the model used for enhancement, if available.
+    pub fn enhancement_model(&self) -> Option<&str> {
+        self.enhancement_model.as_deref()
+    }
+
+    /// Returns the enhancement confidence score, if available.
+    pub fn enhancement_confidence(&self) -> Option<f64> {
+        self.enhancement_confidence
+    }
 }
 
 /// Builder for constructing `Note` instances.
@@ -78,6 +112,10 @@ pub struct NoteBuilder {
     created_at: Option<OffsetDateTime>,
     updated_at: Option<OffsetDateTime>,
     tags: Option<Vec<TagAssignment>>,
+    content_enhanced: Option<String>,
+    enhanced_at: Option<OffsetDateTime>,
+    enhancement_model: Option<String>,
+    enhancement_confidence: Option<f64>,
 }
 
 impl NoteBuilder {
@@ -116,6 +154,30 @@ impl NoteBuilder {
         self
     }
 
+    /// Sets the enhanced content (defaults to None).
+    pub fn content_enhanced(mut self, content_enhanced: impl Into<String>) -> Self {
+        self.content_enhanced = Some(content_enhanced.into());
+        self
+    }
+
+    /// Sets the enhanced timestamp (defaults to None).
+    pub fn enhanced_at(mut self, enhanced_at: OffsetDateTime) -> Self {
+        self.enhanced_at = Some(enhanced_at);
+        self
+    }
+
+    /// Sets the enhancement model (defaults to None).
+    pub fn enhancement_model(mut self, enhancement_model: impl Into<String>) -> Self {
+        self.enhancement_model = Some(enhancement_model.into());
+        self
+    }
+
+    /// Sets the enhancement confidence (defaults to None).
+    pub fn enhancement_confidence(mut self, enhancement_confidence: f64) -> Self {
+        self.enhancement_confidence = Some(enhancement_confidence);
+        self
+    }
+
     /// Builds the `Note`, using defaults for optional fields.
     ///
     /// # Panics
@@ -129,6 +191,10 @@ impl NoteBuilder {
             created_at: self.created_at.unwrap_or(now),
             updated_at: self.updated_at.unwrap_or(now),
             tags: self.tags.unwrap_or_default(),
+            content_enhanced: self.content_enhanced,
+            enhanced_at: self.enhanced_at,
+            enhancement_model: self.enhancement_model,
+            enhancement_confidence: self.enhancement_confidence,
         }
     }
 }

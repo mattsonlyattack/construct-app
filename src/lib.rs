@@ -1,11 +1,13 @@
 pub mod autotagger;
 pub mod db;
+pub mod enhancer;
 pub mod models;
 pub mod ollama;
 pub mod service;
 
 pub use autotagger::{AutoTagger, AutoTaggerBuilder, TagNormalizer};
 pub use db::Database;
+pub use enhancer::{EnhancementResult, NoteEnhancer, NoteEnhancerBuilder};
 pub use models::{AliasInfo, Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
 pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
 pub use service::{ListNotesOptions, NoteService, SortOrder};

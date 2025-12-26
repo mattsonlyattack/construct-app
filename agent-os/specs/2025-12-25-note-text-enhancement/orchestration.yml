@@ -1,0 +1,17 @@
+task_groups:
+  - name: Database Layer - Schema Extension for Enhancement Fields
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Note Model & Service Layer - Note Model and NoteService Updates
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: NoteEnhancer Module - NoteEnhancer LLM Integration
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: CLI Integration - CLI Integration and Display
+    claude_code_subagent: rust-engineer
+    standards:
+      - all

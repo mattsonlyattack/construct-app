@@ -263,7 +263,10 @@ fn test_list_tags_filter_with_alias_resolves_to_canonical() -> Result<()> {
     // Create notes with canonical tag "machine-learning"
     service.create_note("Note about ML algorithms", Some(&["machine-learning"]))?;
     service.create_note("Note about Python", Some(&["python"]))?;
-    service.create_note("Note about ML and Rust", Some(&["machine-learning", "rust"]))?;
+    service.create_note(
+        "Note about ML and Rust",
+        Some(&["machine-learning", "rust"]),
+    )?;
 
     // Create an alias: ml -> machine-learning
     let ml_tag_id = service.get_or_create_tag("machine-learning")?;
@@ -291,7 +294,9 @@ fn test_list_tags_filter_with_alias_resolves_to_canonical() -> Result<()> {
 
     // Verify the Python note is NOT included
     assert!(
-        !results.iter().any(|(_, content, _)| content.contains("Python")),
+        !results
+            .iter()
+            .any(|(_, content, _)| content.contains("Python")),
         "should not include Python note"
     );
 

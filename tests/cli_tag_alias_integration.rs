@@ -94,7 +94,13 @@ fn test_tag_alias_list_displays_aliases_correctly() -> Result<()> {
     // Create aliases (simulating multiple tag-alias add commands)
     service.create_alias("ml", ml_tag, "user", 1.0, None)?;
     service.create_alias("ai", ai_tag, "user", 1.0, None)?;
-    service.create_alias("machine-learning-abbrev", ml_tag, "llm", 0.85, Some("deepseek-r1:8b"))?;
+    service.create_alias(
+        "machine-learning-abbrev",
+        ml_tag,
+        "llm",
+        0.85,
+        Some("deepseek-r1:8b"),
+    )?;
 
     // Act: Execute tag-alias list command
     let aliases = service.list_aliases()?;

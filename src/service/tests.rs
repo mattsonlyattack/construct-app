@@ -914,10 +914,7 @@ fn resolve_alias_returns_none_for_non_existent_alias() {
         .resolve_alias("non-existent-alias")
         .expect("failed to resolve alias");
 
-    assert_eq!(
-        result, None,
-        "non-existent alias should return None"
-    );
+    assert_eq!(result, None, "non-existent alias should return None");
 }
 
 #[test]
@@ -996,7 +993,13 @@ fn create_alias_prevents_alias_to_alias_chains() {
 
     // Try to create an alias where the canonical_tag_id points to a tag whose name is "ml"
     // which is itself an alias - this should fail
-    let result = service.create_alias("machine-learning-alias", TagId::new(ml_as_tag_id), "user", 1.0, None);
+    let result = service.create_alias(
+        "machine-learning-alias",
+        TagId::new(ml_as_tag_id),
+        "user",
+        1.0,
+        None,
+    );
 
     assert!(
         result.is_err(),
@@ -1032,7 +1035,13 @@ fn list_aliases_returns_all_aliases_grouped_by_canonical_tag() {
         .create_alias("ai", ai_tag_id, "user", 1.0, None)
         .expect("failed to create ai alias");
     service
-        .create_alias("machine-learning-abbrev", ml_tag_id, "llm", 0.9, Some("model"))
+        .create_alias(
+            "machine-learning-abbrev",
+            ml_tag_id,
+            "llm",
+            0.9,
+            Some("model"),
+        )
         .expect("failed to create machine-learning-abbrev alias");
 
     // List all aliases
@@ -1042,14 +1051,8 @@ fn list_aliases_returns_all_aliases_grouped_by_canonical_tag() {
 
     // Verify they're ordered by canonical tag name, then by alias name
     let alias_names: Vec<&str> = aliases.iter().map(|a| a.alias()).collect();
-    assert!(
-        alias_names.contains(&"ml"),
-        "should contain ml alias"
-    );
-    assert!(
-        alias_names.contains(&"ai"),
-        "should contain ai alias"
-    );
+    assert!(alias_names.contains(&"ml"), "should contain ml alias");
+    assert!(alias_names.contains(&"ai"), "should contain ai alias");
     assert!(
         alias_names.contains(&"machine-learning-abbrev"),
         "should contain machine-learning-abbrev alias"
@@ -1071,18 +1074,22 @@ fn remove_alias_deletes_mapping_idempotently() {
 
     // Verify alias exists
     assert!(
-        service.resolve_alias("ml").expect("failed to resolve").is_some(),
+        service
+            .resolve_alias("ml")
+            .expect("failed to resolve")
+            .is_some(),
         "alias should exist before removal"
     );
 
     // Remove the alias
-    service
-        .remove_alias("ml")
-        .expect("failed to remove alias");
+    service.remove_alias("ml").expect("failed to remove alias");
 
     // Verify it's gone
     assert!(
-        service.resolve_alias("ml").expect("failed to resolve").is_none(),
+        service
+            .resolve_alias("ml")
+            .expect("failed to resolve")
+            .is_none(),
         "alias should not exist after removal"
     );
 
@@ -1156,7 +1163,13 @@ fn llm_suggested_alias_auto_creation_workflow() {
 
     // Create the LLM-suggested alias
     service
-        .create_alias(suggested_tag, canonical_tag_id, "llm", confidence, Some(model_version))
+        .create_alias(
+            suggested_tag,
+            canonical_tag_id,
+            "llm",
+            confidence,
+            Some(model_version),
+        )
         .expect("failed to create LLM alias");
 
     // Assert: Alias was created with correct provenance
@@ -1227,9 +1240,7 @@ fn alias_removal_then_tag_creation_with_same_name() {
         .expect("failed to create alias");
 
     // Act: Remove the alias
-    service
-        .remove_alias("ml")
-        .expect("failed to remove alias");
+    service.remove_alias("ml").expect("failed to remove alias");
 
     // Now create a new tag with the name "ml" (not an alias, a real tag)
     let new_ml_tag_id = service
@@ -1251,4 +1262,199 @@ fn alias_removal_then_tag_creation_with_same_name() {
         .expect("failed to count ml tags");
 
     assert_eq!(count, 1, "ml tag should exist");
+}
+
+// --- Enhancement Field Tests (Task Group 2: Note Text Enhancement) ---
+
+#[test]
+fn note_struct_includes_optional_enhancement_fields() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note without enhancement
+    let note = service
+        .create_note("Original content", None)
+        .expect("failed to create note");
+
+    // Verify enhancement fields are None by default
+    assert_eq!(note.content_enhanced(), None);
+    assert_eq!(note.enhanced_at(), None);
+    assert_eq!(note.enhancement_model(), None);
+    assert_eq!(note.enhancement_confidence(), None);
+}
+
+#[test]
+fn note_builder_supports_setting_enhancement_fields() {
+    use time::OffsetDateTime;
+
+    let now = OffsetDateTime::now_utc();
+    let note = NoteBuilder::new()
+        .id(NoteId::new(1))
+        .content("Original content")
+        .content_enhanced("Enhanced content")
+        .enhanced_at(now)
+        .enhancement_model("deepseek-r1:8b")
+        .enhancement_confidence(0.85)
+        .build();
+
+    assert_eq!(note.content_enhanced(), Some("Enhanced content"));
+    assert_eq!(note.enhanced_at(), Some(now));
+    assert_eq!(note.enhancement_model(), Some("deepseek-r1:8b"));
+    assert_eq!(note.enhancement_confidence(), Some(0.85));
+}
+
+#[test]
+fn note_accessors_return_correct_values_for_enhancement_fields() {
+    use time::OffsetDateTime;
+
+    let enhanced_time = OffsetDateTime::now_utc();
+    let note = NoteBuilder::new()
+        .id(NoteId::new(42))
+        .content("Short note")
+        .content_enhanced("This is a more detailed version of the short note.")
+        .enhanced_at(enhanced_time)
+        .enhancement_model("deepseek-r1:8b")
+        .enhancement_confidence(0.92)
+        .build();
+
+    // Test all accessors
+    assert_eq!(
+        note.content_enhanced(),
+        Some("This is a more detailed version of the short note.")
+    );
+    assert_eq!(note.enhanced_at(), Some(enhanced_time));
+    assert_eq!(note.enhancement_model(), Some("deepseek-r1:8b"));
+    assert_eq!(note.enhancement_confidence(), Some(0.92));
+
+    // Verify None case
+    let plain_note = NoteBuilder::new()
+        .id(NoteId::new(1))
+        .content("Plain note")
+        .build();
+
+    assert_eq!(plain_note.content_enhanced(), None);
+    assert_eq!(plain_note.enhanced_at(), None);
+    assert_eq!(plain_note.enhancement_model(), None);
+    assert_eq!(plain_note.enhancement_confidence(), None);
+}
+
+#[test]
+fn note_service_stores_enhancement_data_on_note_creation() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note without enhancement (normal flow)
+    let note = service
+        .create_note("Original", None)
+        .expect("failed to create note");
+
+    // Verify enhancement fields are NULL in database
+    let conn = service.database().connection();
+    let row: (Option<String>, Option<i64>, Option<String>, Option<f64>) = conn
+        .query_row(
+            "SELECT content_enhanced, enhanced_at, enhancement_model, enhancement_confidence
+             FROM notes WHERE id = ?1",
+            [note.id().get()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("failed to query enhancement fields");
+
+    assert_eq!(row.0, None, "content_enhanced should be NULL");
+    assert_eq!(row.1, None, "enhanced_at should be NULL");
+    assert_eq!(row.2, None, "enhancement_model should be NULL");
+    assert_eq!(row.3, None, "enhancement_confidence should be NULL");
+}
+
+#[test]
+fn note_service_retrieves_enhancement_data_from_database() {
+    use time::OffsetDateTime;
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note and manually insert enhancement data
+    let note = service
+        .create_note("Original content", None)
+        .expect("failed to create note");
+
+    let enhanced_time = OffsetDateTime::now_utc().unix_timestamp();
+    let conn = service.database().connection();
+    conn.execute(
+        "UPDATE notes
+         SET content_enhanced = ?1, enhanced_at = ?2, enhancement_model = ?3, enhancement_confidence = ?4
+         WHERE id = ?5",
+        (
+            "Enhanced version of the content",
+            enhanced_time,
+            "deepseek-r1:8b",
+            0.88,
+            note.id().get(),
+        ),
+    )
+    .expect("failed to update enhancement fields");
+
+    // Retrieve note and verify enhancement fields are loaded
+    let retrieved = service
+        .get_note(note.id())
+        .expect("failed to get note")
+        .expect("note should exist");
+
+    assert_eq!(
+        retrieved.content_enhanced(),
+        Some("Enhanced version of the content")
+    );
+    assert_eq!(
+        retrieved.enhanced_at(),
+        Some(OffsetDateTime::from_unix_timestamp(enhanced_time).unwrap())
+    );
+    assert_eq!(retrieved.enhancement_model(), Some("deepseek-r1:8b"));
+    assert_eq!(retrieved.enhancement_confidence(), Some(0.88));
+}
+
+#[test]
+fn update_note_enhancement_method_updates_existing_note() {
+    use time::OffsetDateTime;
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note without enhancement
+    let note = service
+        .create_note("Quick thought", None)
+        .expect("failed to create note");
+
+    // Verify no enhancement initially
+    assert_eq!(note.content_enhanced(), None);
+
+    // Update enhancement after note creation (simulates LLM enhancement workflow)
+    let enhanced_time = OffsetDateTime::now_utc();
+    service
+        .update_note_enhancement(
+            note.id(),
+            "This is a quick thought about something important.",
+            "deepseek-r1:8b",
+            0.90,
+            enhanced_time,
+        )
+        .expect("failed to update note enhancement");
+
+    // Retrieve and verify enhancement was added
+    let updated = service
+        .get_note(note.id())
+        .expect("failed to get note")
+        .expect("note should exist");
+
+    assert_eq!(
+        updated.content_enhanced(),
+        Some("This is a quick thought about something important.")
+    );
+    // Unix timestamp loses sub-second precision, so compare timestamps
+    assert_eq!(
+        updated.enhanced_at().unwrap().unix_timestamp(),
+        enhanced_time.unix_timestamp()
+    );
+    assert_eq!(updated.enhancement_model(), Some("deepseek-r1:8b"));
+    assert_eq!(updated.enhancement_confidence(), Some(0.90));
+    // Original content should be unchanged
+    assert_eq!(updated.content(), "Quick thought");
 }

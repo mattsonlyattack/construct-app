@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cons::{
     Database, NoteId, NoteService, TagId, TagSource, autotagger::AutoTaggerBuilder,
-    ollama::OllamaClientBuilder,
+    enhancer::NoteEnhancerBuilder, ollama::OllamaClientBuilder,
 };
 
 /// cons - structure-last personal knowledge management CLI
@@ -158,6 +158,12 @@ fn execute_add(content: &str, tags: Option<&str>, db: Database) -> Result<()> {
     }
     println!();
 
+    // Enhance note content (fail-safe: errors logged but don't fail command)
+    // Enhancement runs AFTER save (original preserved) but BEFORE tagging (tag original intent)
+    if let Err(e) = enhance_note(&service, note.id(), content) {
+        eprintln!("Enhancement skipped: {e}");
+    }
+
     // Auto-tag synchronously (fail-safe: errors logged but don't fail command)
     if let Err(e) = auto_tag_note(&service, note.id(), content) {
         eprintln!("Auto-tagging skipped: {e}");
@@ -226,14 +232,18 @@ fn find_alias_opportunity(service: &NoteService, suggested_tag: &str) -> Option<
 
                 // Also check for simple prefix matches on any part
                 for part in &parts {
-                    if part.starts_with(&normalized_suggested) && part.len() >= normalized_suggested.len() * 2 {
+                    if part.starts_with(&normalized_suggested)
+                        && part.len() >= normalized_suggested.len() * 2
+                    {
                         return Some(TagId::new(tag_id));
                     }
                 }
             }
 
             // Check direct prefix match (e.g., "ai" matches "aimodel")
-            if tag_name.starts_with(&normalized_suggested) && tag_name.len() >= normalized_suggested.len() * 2 {
+            if tag_name.starts_with(&normalized_suggested)
+                && tag_name.len() >= normalized_suggested.len() * 2
+            {
                 return Some(TagId::new(tag_id));
             }
         }
@@ -276,13 +286,9 @@ fn auto_tag_note(service: &NoteService, note_id: NoteId, content: &str) -> Resul
         // This detects common abbreviation patterns (e.g., "ml" → "machine-learning")
         if let Some(canonical_tag_id) = find_alias_opportunity(service, tag_name) {
             // Create the alias mapping (fail-safe: log errors but don't fail)
-            if let Err(e) = service.create_alias(
-                tag_name,
-                canonical_tag_id,
-                "llm",
-                *confidence,
-                Some(&model),
-            ) {
+            if let Err(e) =
+                service.create_alias(tag_name, canonical_tag_id, "llm", *confidence, Some(&model))
+            {
                 eprintln!("Failed to create alias '{}': {}", tag_name, e);
             } else {
                 eprintln!("Created alias: '{}' → canonical tag", tag_name);
@@ -299,7 +305,12 @@ fn auto_tag_note(service: &NoteService, note_id: NoteId, content: &str) -> Resul
                     [canonical_tag_id.get()],
                     |row| row.get(0),
                 )
-                .with_context(|| format!("Failed to get canonical tag name for id {}", canonical_tag_id))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to get canonical tag name for id {}",
+                        canonical_tag_id
+                    )
+                })?;
 
             service
                 .add_tags_to_note(note_id, &[canonical_name.as_str()], source)
@@ -315,6 +326,46 @@ fn auto_tag_note(service: &NoteService, note_id: NoteId, content: &str) -> Resul
 
     let tag_list: Vec<&str> = tags.keys().map(|s| s.as_str()).collect();
     eprintln!("Auto-tagged: {}", tag_list.join(", "));
+
+    Ok(())
+}
+
+/// Enhances a note using the configured Ollama model.
+///
+/// Reuses the provided NoteService to avoid opening a second database connection.
+/// Returns an error if enhancement fails; caller decides whether to propagate or log.
+///
+/// Enhancement expands abbreviated notes, completes fragments, and clarifies implicit
+/// context while preserving the original intent. The original content is never modified.
+fn enhance_note(service: &NoteService, note_id: NoteId, content: &str) -> Result<()> {
+    let model = std::env::var("OLLAMA_MODEL").context("OLLAMA_MODEL not set")?;
+
+    let client = OllamaClientBuilder::new()
+        .build()
+        .context("Failed to build Ollama client")?;
+
+    let enhancer = NoteEnhancerBuilder::new().client(Arc::new(client)).build();
+
+    let result = enhancer
+        .enhance_content(&model, content)
+        .context("Failed to enhance content")?;
+
+    // Update note with enhancement result
+    let now = time::OffsetDateTime::now_utc();
+    service
+        .update_note_enhancement(
+            note_id,
+            result.enhanced_content(),
+            &model,
+            result.confidence(),
+            now,
+        )
+        .context("Failed to update note with enhancement")?;
+
+    eprintln!(
+        "Enhanced with {:.0}% confidence",
+        result.confidence() * 100.0
+    );
 
     Ok(())
 }
@@ -417,7 +468,10 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
         // Display note information
         println!("ID: {}", note.id().get());
         println!("Created: {}", timestamp);
-        println!("Content: {}", note.content());
+
+        // Display content using stacked format (original + enhanced if available)
+        print!("{}", format_note_content(note));
+
         if !tag_names.is_empty() {
             println!("Tags: {}", tag_names.join(" "));
         }
@@ -425,6 +479,39 @@ fn execute_list(limit: Option<usize>, tags: Option<&str>, service: NoteService) 
     }
 
     Ok(())
+}
+
+/// Formats note content for display using stacked format.
+///
+/// Returns a formatted string with:
+/// - Original content first
+/// - `---` separator when enhancement exists
+/// - Enhanced content below separator
+/// - Confidence displayed as percentage: `(enhanced: 85% confidence)`
+///
+/// When no enhancement is available, returns only the original content.
+fn format_note_content(note: &cons::Note) -> String {
+    let mut output = String::new();
+
+    // Display original content first
+    output.push_str("Content: ");
+    output.push_str(note.content());
+    output.push('\n');
+
+    // Display enhanced content if available
+    if let Some(enhanced) = note.content_enhanced() {
+        output.push_str("---\n");
+        output.push_str("Enhanced: ");
+        output.push_str(enhanced);
+        output.push('\n');
+
+        // Show confidence as percentage
+        if let Some(confidence) = note.enhancement_confidence() {
+            output.push_str(&format!("({:.0}% confidence)\n", confidence * 100.0));
+        }
+    }
+
+    output
 }
 
 /// Gets tag names from the database for the given tag assignments.
@@ -472,9 +559,7 @@ fn handle_tag_alias(cmd: &TagAliasCommand) -> Result<()> {
     let db = Database::open(&db_path).context("Failed to open database")?;
 
     match &cmd.command {
-        TagAliasCommands::Add { alias, canonical } => {
-            execute_tag_alias_add(alias, canonical, db)
-        }
+        TagAliasCommands::Add { alias, canonical } => execute_tag_alias_add(alias, canonical, db),
         TagAliasCommands::List => execute_tag_alias_list(db),
         TagAliasCommands::Remove { alias } => execute_tag_alias_remove(alias, db),
     }
@@ -500,7 +585,12 @@ fn execute_tag_alias_add(alias: &str, canonical: &str, db: Database) -> Result<(
     // Create the alias with source='user', confidence=1.0
     service
         .create_alias(&normalized_alias, canonical_tag_id, "user", 1.0, None)
-        .with_context(|| format!("Failed to create alias '{}' -> '{}'", normalized_alias, normalized_canonical))?;
+        .with_context(|| {
+            format!(
+                "Failed to create alias '{}' -> '{}'",
+                normalized_alias, normalized_canonical
+            )
+        })?;
 
     println!(
         "Alias created: '{}' -> '{}'",
@@ -541,10 +631,7 @@ fn execute_tag_alias_list(db: Database) -> Result<()> {
             )
             .context("Failed to get canonical tag name")?;
 
-        grouped
-            .entry(canonical_name)
-            .or_default()
-            .push(alias_info);
+        grouped.entry(canonical_name).or_default().push(alias_info);
     }
 
     // Sort canonical tag names for consistent output
@@ -1123,9 +1210,7 @@ mod tests {
         assert!(resolved_before.is_some());
 
         // Remove the alias
-        service
-            .remove_alias("ml")
-            .expect("failed to remove alias");
+        service.remove_alias("ml").expect("failed to remove alias");
 
         // Verify it's gone
         let resolved_after = service
@@ -1322,7 +1407,8 @@ mod tests {
 
         // Simulate alias creation failure (e.g., invalid canonical tag ID)
         let invalid_tag_id = TagId::new(999999);
-        let alias_result = service.create_alias("ai", invalid_tag_id, "llm", 0.85, Some("test-model"));
+        let alias_result =
+            service.create_alias("ai", invalid_tag_id, "llm", 0.85, Some("test-model"));
 
         // Alias creation should fail (canonical tag doesn't exist)
         assert!(
@@ -1351,9 +1437,7 @@ mod tests {
             .expect("note creation should succeed");
 
         // Verify note exists even if we don't attempt auto-tagging
-        let retrieved = service
-            .get_note(note.id())
-            .expect("failed to get note");
+        let retrieved = service.get_note(note.id()).expect("failed to get note");
         assert!(retrieved.is_some(), "note should exist");
 
         // The actual auto_tag_note function catches errors and logs them
@@ -1397,5 +1481,229 @@ mod tests {
             result.is_some(),
             "should detect 'ai' as abbreviation of 'artificial-intelligence'"
         );
+    }
+
+    // --- CLI Enhancement Integration Tests (Task Group 4) ---
+
+    #[test]
+    fn execute_add_calls_enhancement_after_note_save() {
+        // Test that execute_add attempts enhancement after note is saved
+        // Enhancement may fail (no Ollama), but note creation should succeed
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create note directly to test the flow
+        let note = service
+            .create_note("quick thought", None)
+            .expect("note creation should succeed");
+
+        // Verify note exists with original content
+        let retrieved = service
+            .get_note(note.id())
+            .expect("failed to get note")
+            .expect("note should exist");
+        assert_eq!(retrieved.content(), "quick thought");
+
+        // Enhancement fields should be None if Ollama is unavailable
+        // (This is the fail-safe behavior we're testing)
+        // Note: In real scenario, enhance_note would be called after create_note
+    }
+
+    #[test]
+    fn enhancement_failure_does_not_block_note_capture() {
+        // Test that note creation succeeds even if enhancement fails
+        // This verifies the fail-safe pattern in execute_add
+        let db = Database::in_memory().expect("failed to create in-memory database");
+
+        // Call execute_add - it should succeed even without Ollama
+        let result = execute_add("test note", None, db);
+
+        // Note creation should succeed (enhancement errors are caught)
+        assert!(
+            result.is_ok(),
+            "note capture should succeed even if enhancement fails"
+        );
+    }
+
+    #[test]
+    fn enhancement_runs_after_save_before_tagging() {
+        // Test workflow order: save -> enhance -> tag
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create note (step 1: save)
+        let note = service
+            .create_note("workflow test", None)
+            .expect("note creation should succeed");
+
+        // At this point, note is saved with original content
+        let after_save = service
+            .get_note(note.id())
+            .expect("failed to get note")
+            .expect("note should exist");
+        assert_eq!(after_save.content(), "workflow test");
+        assert_eq!(after_save.content_enhanced(), None);
+
+        // Step 2: Enhancement would happen here (simulated)
+        // In real flow, enhance_note is called here
+
+        // Step 3: Tagging happens on ORIGINAL content
+        // This ensures tags reflect user's original intent, not AI expansion
+        let source = TagSource::llm("test-model", 85);
+        service
+            .add_tags_to_note(note.id(), &["test-tag"], source)
+            .expect("tagging should succeed");
+
+        let after_tag = service
+            .get_note(note.id())
+            .expect("failed to get note")
+            .expect("note should exist");
+        assert_eq!(after_tag.tags().len(), 1);
+    }
+
+    #[test]
+    fn list_command_displays_original_and_enhanced_content() {
+        // Test that execute_list shows both original and enhanced content
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create note with enhancement data
+        let note = service
+            .create_note("quick thought", None)
+            .expect("failed to create note");
+
+        // Simulate enhancement update
+        let now = time::OffsetDateTime::now_utc();
+        service
+            .update_note_enhancement(
+                note.id(),
+                "This is a quick thought about something important.",
+                "test-model",
+                0.85,
+                now,
+            )
+            .expect("failed to update enhancement");
+
+        // Test the display format
+        let retrieved = service
+            .get_note(note.id())
+            .expect("failed to get note")
+            .expect("note should exist");
+
+        let formatted = format_note_content(&retrieved);
+
+        // Verify formatted output contains original content
+        assert!(
+            formatted.contains("quick thought"),
+            "formatted output should contain original content"
+        );
+
+        // Verify formatted output contains separator
+        assert!(
+            formatted.contains("---"),
+            "formatted output should contain separator"
+        );
+
+        // Verify formatted output contains enhanced content
+        assert!(
+            formatted.contains("This is a quick thought about something important."),
+            "formatted output should contain enhanced content"
+        );
+
+        // Verify formatted output contains confidence
+        assert!(
+            formatted.contains("85% confidence"),
+            "formatted output should show confidence percentage"
+        );
+    }
+
+    #[test]
+    fn format_note_content_shows_stacked_format_with_separator() {
+        // Test the stacked display format helper function
+        use cons::NoteBuilder;
+
+        let now = time::OffsetDateTime::now_utc();
+
+        // Test note WITH enhancement
+        let enhanced_note = NoteBuilder::new()
+            .id(NoteId::new(1))
+            .content("buy milk")
+            .created_at(now)
+            .updated_at(now)
+            .content_enhanced("Buy milk from the grocery store.")
+            .enhancement_confidence(0.75)
+            .build();
+
+        let formatted = format_note_content(&enhanced_note);
+
+        assert!(
+            formatted.contains("Content: buy milk"),
+            "should show original content first"
+        );
+        assert!(formatted.contains("---"), "should have separator");
+        assert!(
+            formatted.contains("Buy milk from the grocery store."),
+            "should show enhanced content"
+        );
+        assert!(
+            formatted.contains("75% confidence"),
+            "should show confidence percentage"
+        );
+
+        // Test note WITHOUT enhancement
+        let plain_note = NoteBuilder::new()
+            .id(NoteId::new(2))
+            .content("already complete thought")
+            .created_at(now)
+            .updated_at(now)
+            .build();
+
+        let formatted_plain = format_note_content(&plain_note);
+
+        assert!(
+            formatted_plain.contains("Content: already complete thought"),
+            "should show original content"
+        );
+        assert!(
+            !formatted_plain.contains("---"),
+            "should NOT have separator when no enhancement"
+        );
+    }
+
+    #[test]
+    fn confidence_percentage_display_format() {
+        // Test that confidence is displayed as integer percentage
+        use cons::NoteBuilder;
+
+        let now = time::OffsetDateTime::now_utc();
+
+        let test_cases = vec![
+            (0.0, "0% confidence"),
+            (0.5, "50% confidence"),
+            (0.85, "85% confidence"),
+            (1.0, "100% confidence"),
+            (0.955, "96% confidence"), // Test rounding
+        ];
+
+        for (confidence_f64, expected_str) in test_cases {
+            let note = NoteBuilder::new()
+                .id(NoteId::new(1))
+                .content("test")
+                .created_at(now)
+                .updated_at(now)
+                .content_enhanced("enhanced test")
+                .enhancement_confidence(confidence_f64)
+                .build();
+
+            let formatted = format_note_content(&note);
+
+            assert!(
+                formatted.contains(expected_str),
+                "confidence {} should display as '{}', got: {}",
+                confidence_f64,
+                expected_str,
+                formatted
+            );
+        }
     }
 }

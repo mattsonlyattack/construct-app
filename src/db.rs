@@ -5,7 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::Connection;
 
-use schema::INITIAL_SCHEMA;
+use schema::{INITIAL_SCHEMA, MIGRATIONS};
 
 /// Database wrapper providing connection management and schema initialization.
 pub struct Database {
@@ -38,9 +38,41 @@ impl Database {
     ///
     /// Executes all schema statements in a single transaction.
     /// Uses IF NOT EXISTS for idempotent execution.
+    /// Runs migrations for column additions, ignoring "duplicate column" errors.
     fn initialize_schema(&self) -> Result<()> {
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
         self.conn.execute_batch(INITIAL_SCHEMA)?;
+
+        // Execute migrations line by line, ignoring "duplicate column" errors
+        // This allows idempotent execution on both fresh and existing databases
+        for statement in MIGRATIONS.lines() {
+            let trimmed = statement.trim();
+            // Skip empty lines and comments
+            if trimmed.is_empty() || trimmed.starts_with("--") {
+                continue;
+            }
+
+            // Execute ALTER TABLE statements, ignoring duplicate column errors
+            match self.conn.execute(trimmed, []) {
+                Ok(_) => {}
+                Err(rusqlite::Error::SqliteFailure(err, msg)) => {
+                    // Check if this is a "duplicate column name" error
+                    // SQLite returns SQLITE_ERROR (code 1) for duplicate columns
+                    let is_duplicate_column = msg
+                        .as_ref()
+                        .map(|s| s.contains("duplicate column"))
+                        .unwrap_or(false);
+
+                    if !is_duplicate_column {
+                        // Not a duplicate column error, propagate it
+                        return Err(rusqlite::Error::SqliteFailure(err, msg).into());
+                    }
+                    // Otherwise, silently ignore duplicate column errors
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+
         Ok(())
     }
 
@@ -585,5 +617,235 @@ mod tests {
             .unwrap();
 
         assert_eq!(model_version, None);
+    }
+
+    #[test]
+    fn notes_has_content_enhanced_column() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check content_enhanced column exists
+        let mut stmt = db.connection().prepare("PRAGMA table_info(notes)").unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check content_enhanced column exists and is TEXT (nullable)
+        let content_enhanced_column = columns
+            .iter()
+            .find(|(name, _)| name == "content_enhanced")
+            .expect("content_enhanced column should exist");
+
+        assert_eq!(content_enhanced_column.1, "TEXT");
+
+        // Verify NULL is allowed by inserting without content_enhanced
+        db.connection()
+            .execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+                [],
+            )
+            .unwrap();
+
+        let content_enhanced: Option<String> = db
+            .connection()
+            .query_row(
+                "SELECT content_enhanced FROM notes WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(content_enhanced, None);
+    }
+
+    #[test]
+    fn notes_has_enhanced_at_column() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check enhanced_at column exists
+        let mut stmt = db.connection().prepare("PRAGMA table_info(notes)").unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check enhanced_at column exists and is INTEGER (nullable)
+        let enhanced_at_column = columns
+            .iter()
+            .find(|(name, _)| name == "enhanced_at")
+            .expect("enhanced_at column should exist");
+
+        assert_eq!(enhanced_at_column.1, "INTEGER");
+
+        // Verify NULL is allowed by inserting without enhanced_at
+        db.connection()
+            .execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+                [],
+            )
+            .unwrap();
+
+        let enhanced_at: Option<i64> = db
+            .connection()
+            .query_row("SELECT enhanced_at FROM notes WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(enhanced_at, None);
+    }
+
+    #[test]
+    fn notes_has_enhancement_model_column() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check enhancement_model column exists
+        let mut stmt = db.connection().prepare("PRAGMA table_info(notes)").unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check enhancement_model column exists and is TEXT (nullable)
+        let enhancement_model_column = columns
+            .iter()
+            .find(|(name, _)| name == "enhancement_model")
+            .expect("enhancement_model column should exist");
+
+        assert_eq!(enhancement_model_column.1, "TEXT");
+
+        // Verify NULL is allowed by inserting without enhancement_model
+        db.connection()
+            .execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+                [],
+            )
+            .unwrap();
+
+        let enhancement_model: Option<String> = db
+            .connection()
+            .query_row(
+                "SELECT enhancement_model FROM notes WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(enhancement_model, None);
+    }
+
+    #[test]
+    fn notes_has_enhancement_confidence_column() {
+        let db = Database::in_memory().unwrap();
+
+        // Query table schema to check enhancement_confidence column exists
+        let mut stmt = db.connection().prepare("PRAGMA table_info(notes)").unwrap();
+
+        let columns: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?, // name
+                    row.get::<_, String>(2)?, // type
+                ))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Check enhancement_confidence column exists and is REAL (nullable)
+        let enhancement_confidence_column = columns
+            .iter()
+            .find(|(name, _)| name == "enhancement_confidence")
+            .expect("enhancement_confidence column should exist");
+
+        assert_eq!(enhancement_confidence_column.1, "REAL");
+
+        // Verify NULL is allowed by inserting without enhancement_confidence
+        db.connection()
+            .execute(
+                "INSERT INTO notes (id, content) VALUES (1, 'test note')",
+                [],
+            )
+            .unwrap();
+
+        let enhancement_confidence: Option<f64> = db
+            .connection()
+            .query_row(
+                "SELECT enhancement_confidence FROM notes WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(enhancement_confidence, None);
+    }
+
+    #[test]
+    fn schema_migration_idempotent_on_existing_database() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        // Create database with initial note
+        {
+            let db = Database::open(&db_path).unwrap();
+            db.connection()
+                .execute("INSERT INTO notes (content) VALUES ('existing note')", [])
+                .unwrap();
+        }
+
+        // Reopen database - migrations should run without error
+        let db2 = Database::open(&db_path).unwrap();
+
+        // Verify enhancement columns exist
+        let mut stmt = db2
+            .connection()
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap();
+
+        let column_names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(column_names.contains(&"content_enhanced".to_string()));
+        assert!(column_names.contains(&"enhanced_at".to_string()));
+        assert!(column_names.contains(&"enhancement_model".to_string()));
+        assert!(column_names.contains(&"enhancement_confidence".to_string()));
+
+        // Verify existing data is preserved
+        let content: String = db2
+            .connection()
+            .query_row("SELECT content FROM notes LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(content, "existing note");
+
+        // Reopen again - should be idempotent (no errors)
+        let db3 = Database::open(&db_path);
+        assert!(db3.is_ok(), "Schema migration should be idempotent");
     }
 }

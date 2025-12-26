@@ -55,3 +55,17 @@ CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
 -- Index for efficient tag alias lookup by canonical tag
 CREATE INDEX IF NOT EXISTS idx_tag_aliases_canonical ON tag_aliases(canonical_tag_id);
 "#;
+
+/// Schema migrations for adding new columns to existing tables.
+///
+/// These ALTER TABLE statements are executed after INITIAL_SCHEMA.
+/// SQLite doesn't support IF NOT EXISTS for ALTER TABLE ADD COLUMN,
+/// so we handle duplicate column errors gracefully in initialize_schema().
+pub const MIGRATIONS: &str = r#"
+-- Add enhancement fields to notes table
+-- These columns store LLM-enhanced versions of fragmentary notes with provenance metadata
+ALTER TABLE notes ADD COLUMN content_enhanced TEXT;
+ALTER TABLE notes ADD COLUMN enhanced_at INTEGER;
+ALTER TABLE notes ADD COLUMN enhancement_model TEXT;
+ALTER TABLE notes ADD COLUMN enhancement_confidence REAL;
+"#;

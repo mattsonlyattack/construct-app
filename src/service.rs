@@ -188,20 +188,44 @@ impl NoteService {
     pub fn get_note(&self, id: NoteId) -> Result<Option<Note>> {
         let conn = self.db.connection();
 
-        let mut stmt =
-            conn.prepare("SELECT id, content, created_at, updated_at FROM notes WHERE id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, content, created_at, updated_at, content_enhanced, enhanced_at, enhancement_model, enhancement_confidence
+             FROM notes WHERE id = ?1"
+        )?;
 
         let result = stmt.query_row([id.get()], |row| {
             let id: i64 = row.get(0)?;
             let content: String = row.get(1)?;
             let created_at: i64 = row.get(2)?;
             let updated_at: i64 = row.get(3)?;
+            let content_enhanced: Option<String> = row.get(4)?;
+            let enhanced_at: Option<i64> = row.get(5)?;
+            let enhancement_model: Option<String> = row.get(6)?;
+            let enhancement_confidence: Option<f64> = row.get(7)?;
 
-            Ok((id, content, created_at, updated_at))
+            Ok((
+                id,
+                content,
+                created_at,
+                updated_at,
+                content_enhanced,
+                enhanced_at,
+                enhancement_model,
+                enhancement_confidence,
+            ))
         });
 
         match result {
-            Ok((id, content, created_at, updated_at)) => {
+            Ok((
+                id,
+                content,
+                created_at,
+                updated_at,
+                content_enhanced,
+                enhanced_at,
+                enhancement_model,
+                enhancement_confidence,
+            )) => {
                 // Load tag assignments for this note
                 let mut tag_stmt = conn.prepare(
                     "SELECT nt.tag_id, nt.confidence, nt.source, nt.created_at, nt.model_version
@@ -245,13 +269,30 @@ impl NoteService {
                     tag_assignments.push(tag_assignment);
                 }
 
-                let note = NoteBuilder::new()
+                // Build Note with enhancement fields
+                let mut builder = NoteBuilder::new()
                     .id(NoteId::new(id))
                     .content(content)
                     .created_at(OffsetDateTime::from_unix_timestamp(created_at)?)
                     .updated_at(OffsetDateTime::from_unix_timestamp(updated_at)?)
-                    .tags(tag_assignments)
-                    .build();
+                    .tags(tag_assignments);
+
+                // Add enhancement fields if present
+                if let Some(enhanced_content) = content_enhanced {
+                    builder = builder.content_enhanced(enhanced_content);
+                }
+                if let Some(enhanced_timestamp) = enhanced_at {
+                    builder = builder
+                        .enhanced_at(OffsetDateTime::from_unix_timestamp(enhanced_timestamp)?);
+                }
+                if let Some(model) = enhancement_model {
+                    builder = builder.enhancement_model(model);
+                }
+                if let Some(confidence) = enhancement_confidence {
+                    builder = builder.enhancement_confidence(confidence);
+                }
+
+                let note = builder.build();
 
                 Ok(Some(note))
             }
@@ -842,6 +883,77 @@ impl NoteService {
         conn.execute(
             "DELETE FROM tag_aliases WHERE alias = ?1 COLLATE NOCASE",
             [&normalized],
+        )?;
+
+        Ok(())
+    }
+
+    /// Updates the enhancement fields for an existing note.
+    ///
+    /// This method is designed for the enhancement workflow where:
+    /// 1. Note is saved first (original content preserved)
+    /// 2. Enhancement is attempted
+    /// 3. If successful, this method updates the note with enhancement data
+    ///
+    /// # Arguments
+    ///
+    /// * `note_id` - The ID of the note to update
+    /// * `content_enhanced` - The AI-enhanced version of the note content
+    /// * `model` - The model identifier used for enhancement
+    /// * `confidence` - Enhancement confidence score (0.0-1.0)
+    /// * `enhanced_at` - Timestamp when enhancement occurred
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    /// use time::OffsetDateTime;
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create note
+    /// let note = service.create_note("Quick thought", None)?;
+    ///
+    /// // Later, after LLM enhancement succeeds
+    /// let now = OffsetDateTime::now_utc();
+    /// service.update_note_enhancement(
+    ///     note.id(),
+    ///     "This is a quick thought about something important.",
+    ///     "deepseek-r1:8b",
+    ///     0.85,
+    ///     now,
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn update_note_enhancement(
+        &self,
+        note_id: NoteId,
+        content_enhanced: &str,
+        model: &str,
+        confidence: f64,
+        enhanced_at: OffsetDateTime,
+    ) -> Result<()> {
+        let conn = self.db.connection();
+        let enhanced_timestamp = enhanced_at.unix_timestamp();
+
+        // Update only the enhancement fields, leaving original content unchanged
+        conn.execute(
+            "UPDATE notes
+             SET content_enhanced = ?1,
+                 enhanced_at = ?2,
+                 enhancement_model = ?3,
+                 enhancement_confidence = ?4
+             WHERE id = ?5",
+            (
+                content_enhanced,
+                enhanced_timestamp,
+                model,
+                confidence,
+                note_id.get(),
+            ),
         )?;
 
         Ok(())
