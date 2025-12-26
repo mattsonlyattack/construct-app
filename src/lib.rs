@@ -10,7 +10,7 @@ pub use db::Database;
 pub use enhancer::{EnhancementResult, NoteEnhancer, NoteEnhancerBuilder};
 pub use models::{AliasInfo, Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId, TagSource};
 pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
-pub use service::{ListNotesOptions, NoteService, SortOrder};
+pub use service::{ListNotesOptions, NoteService, SearchResult, SortOrder};
 
 #[cfg(test)]
 mod tests {

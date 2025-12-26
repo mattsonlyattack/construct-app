@@ -516,13 +516,13 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
     // Apply default limit of 10 when not specified
     let limit = limit.unwrap_or(10);
 
-    // Call service search_notes method
-    let notes = service
+    // Call service search_notes method - returns SearchResult with note and relevance_score
+    let results = service
         .search_notes(query, Some(limit))
         .context("Failed to search notes")?;
 
     // Handle empty results
-    if notes.is_empty() {
+    if results.is_empty() {
         println!("No notes found matching query");
         return Ok(());
     }
@@ -531,7 +531,10 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
     let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
 
     // Display each note (using same format as list command)
-    for note in &notes {
+    // Extract .note from SearchResult - score is available for future dual-channel use
+    for result in &results {
+        let note = &result.note;
+
         // Format timestamp as "YYYY-MM-DD HH:MM"
         let timestamp = note
             .created_at()

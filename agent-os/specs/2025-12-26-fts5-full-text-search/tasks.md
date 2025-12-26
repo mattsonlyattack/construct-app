@@ -1,7 +1,7 @@
 # Task Breakdown: FTS5 Full-Text Search
 
 ## Overview
-Total Tasks: 4 Task Groups, approximately 18-22 sub-tasks
+Total Tasks: 5 Task Groups, approximately 24-28 sub-tasks
 
 This feature adds full-text search capabilities to the cons CLI using SQLite FTS5. Users can search across note content, enhanced content, and tag names with a simple `cons search "query"` command.
 
@@ -248,3 +248,42 @@ These features are explicitly out of scope and should NOT be implemented:
 - Fuzzy matching beyond Porter stemming
 - Search configuration options
 - Search history or saved searches
+
+---
+
+### Dual-Channel Preparation
+
+#### Task Group 5: SearchResult Type and Score Exposure
+**Dependencies:** Task Groups 1-4 (completed)
+
+- [x] 5.0 Add SearchResult type with relevance scores
+  - [x] 5.1 Write tests for SearchResult and score normalization
+    - Test SearchResult contains note and relevance_score fields
+    - Test BM25 scores are normalized to 0.0-1.0 range
+    - Test higher relevance produces higher normalized score
+    - Test CLI still works with SearchResult (extracts .note)
+  - [x] 5.2 Add SearchResult struct to service module
+    - Location: `/home/md/construct-app/src/service.rs`
+    - `pub struct SearchResult { pub note: Note, pub relevance_score: f64 }`
+    - Add derive macros: Debug, Clone
+  - [x] 5.3 Update search_notes to return Vec<SearchResult>
+    - Change signature: `pub fn search_notes(...) -> Result<Vec<SearchResult>>`
+    - Modify SQL to include bm25() score: `SELECT note_id, bm25(notes_fts) as score`
+    - Normalize score: `1.0 / (1.0 + raw_score.abs())`
+    - Construct SearchResult for each match
+  - [x] 5.4 Update CLI to extract .note from SearchResult
+    - Location: `/home/md/construct-app/src/main.rs` in `execute_search`
+    - Change: `for note in results` → `for result in results { let note = result.note; ... }`
+  - [x] 5.5 Update existing tests to use SearchResult
+    - Update test assertions that expect Vec<Note> to expect Vec<SearchResult>
+    - Extract .note for existing assertions, add score assertions where appropriate
+  - [x] 5.6 Verify all FTS5 tests still pass
+    - Run: `cargo test fts && cargo test search`
+    - Ensure no regressions
+
+**Acceptance Criteria:**
+- [x] SearchResult type with note and relevance_score (0.0-1.0)
+- [x] search_notes returns Vec<SearchResult>
+- [x] BM25 scores properly normalized
+- [x] CLI works unchanged (extracts .note)
+- [x] All existing FTS5 tests pass (may need SearchResult extraction)

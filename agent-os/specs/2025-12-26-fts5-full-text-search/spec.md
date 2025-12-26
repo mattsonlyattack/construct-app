@@ -32,9 +32,18 @@ Add full-text search capabilities to the cons CLI using SQLite FTS5, enabling us
 - Order results by relevance score descending (most relevant first)
 - BM25 considers term frequency and document length automatically
 
+**Score Normalization for Dual-Channel Retrieval**
+- Add `SearchResult` type: `{ note: Note, relevance_score: f64 }` where score is normalized 0.0-1.0
+- Update `search_notes` to return `Result<Vec<SearchResult>>` instead of `Result<Vec<Note>>`
+- BM25 returns negative scores (more negative = more relevant)
+- Normalize to 0.0-1.0 range: `normalized = 1.0 / (1.0 + raw_score.abs())`
+- CLI extracts `.note` field for display, ignoring scores
+- Enables future dual-channel merge: `(fts_score + graph_score) * intersection_boost` per KNOWLEDGE.md
+
 **NoteService Integration**
-- Add `search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<Note>>` method
-- Return full Note objects including tags (same as list_notes) for consistent display
+- Add `SearchResult` struct with `note: Note` and `relevance_score: f64` fields
+- Add `search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<SearchResult>>` method
+- Return SearchResult objects with normalized scores for dual-channel retrieval compatibility
 - Reuse existing `get_note()` method to load full Note data after FTS returns matching IDs
 - Follow established query patterns from `list_notes()` method
 

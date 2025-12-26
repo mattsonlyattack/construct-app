@@ -6,6 +6,38 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use time::OffsetDateTime;
 
+/// Search result with relevance score for dual-channel retrieval.
+///
+/// Contains a note and its normalized relevance score (0.0-1.0) from BM25 ranking.
+/// The score enables combining FTS results with graph-based retrieval scores
+/// in dual-channel search (see KNOWLEDGE.md).
+///
+/// # Examples
+///
+/// ```
+/// use cons::{Database, NoteService};
+///
+/// # fn main() -> anyhow::Result<()> {
+/// let db = Database::in_memory()?;
+/// let service = NoteService::new(db);
+/// service.create_note("Learning Rust programming", Some(&["rust"]))?;
+///
+/// let results = service.search_notes("rust", None)?;
+/// for result in &results {
+///     println!("Score: {:.2}, Note: {}", result.relevance_score, result.note.content());
+/// }
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct SearchResult {
+    /// The matched note with full content and tags.
+    pub note: Note,
+    /// Normalized relevance score (0.0-1.0, higher = more relevant).
+    /// Derived from BM25: `1.0 / (1.0 + raw_score.abs())`
+    pub relevance_score: f64,
+}
+
 /// Service layer providing note management operations.
 ///
 /// NoteService owns a Database instance and provides high-level business logic
@@ -894,6 +926,10 @@ impl NoteService {
     /// All search terms must match (AND logic). Porter stemming automatically handles word
     /// variations (e.g., "running" matches "run").
     ///
+    /// Returns `SearchResult` objects containing the note and a normalized relevance score
+    /// (0.0-1.0, higher = more relevant). The score enables dual-channel retrieval where
+    /// FTS scores can be combined with graph-based scores (see KNOWLEDGE.md).
+    ///
     /// # Arguments
     ///
     /// * `query` - Search query string (cannot be empty or whitespace-only)
@@ -901,8 +937,8 @@ impl NoteService {
     ///
     /// # Returns
     ///
-    /// Returns a vector of Note objects ordered by relevance (most relevant first).
-    /// Each Note includes full data including tags for consistent display.
+    /// Returns a vector of `SearchResult` objects ordered by relevance (most relevant first).
+    /// Each result contains the full Note (including tags) and a normalized relevance score.
     ///
     /// # Errors
     ///
@@ -921,16 +957,18 @@ impl NoteService {
     /// service.create_note("Learning Rust programming", Some(&["rust"]))?;
     /// service.create_note("Python tutorial", Some(&["python"]))?;
     ///
-    /// // Search for notes about Rust
+    /// // Search for notes about Rust - returns SearchResult with score
     /// let results = service.search_notes("rust", None)?;
     /// assert_eq!(results.len(), 1);
+    /// assert!(results[0].relevance_score > 0.0 && results[0].relevance_score <= 1.0);
     ///
-    /// // Search with limit
-    /// let limited = service.search_notes("programming", Some(10))?;
+    /// // Access the note from the result
+    /// let note = &results[0].note;
+    /// assert!(note.content().contains("Rust"));
     /// # Ok(())
     /// # }
     /// ```
-    pub fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<Note>> {
+    pub fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<SearchResult>> {
         // Validate query is not empty or whitespace-only
         let trimmed_query = query.trim();
         if trimmed_query.is_empty() {
@@ -951,37 +989,43 @@ impl NoteService {
 
         let conn = self.db.connection();
 
-        // Query FTS5 table with BM25 ranking
-        // ORDER BY bm25() ascending (lower scores are more relevant in FTS5)
+        // Query FTS5 table with BM25 ranking, also selecting the score
+        // ORDER BY bm25() ascending (lower/more negative scores are more relevant in FTS5)
         let query_sql = if let Some(limit_val) = limit {
             format!(
-                "SELECT note_id FROM notes_fts
+                "SELECT note_id, bm25(notes_fts) as score FROM notes_fts
                  WHERE notes_fts MATCH ?
-                 ORDER BY bm25(notes_fts)
+                 ORDER BY score
                  LIMIT {}",
                 limit_val
             )
         } else {
-            "SELECT note_id FROM notes_fts
+            "SELECT note_id, bm25(notes_fts) as score FROM notes_fts
              WHERE notes_fts MATCH ?
-             ORDER BY bm25(notes_fts)"
+             ORDER BY score"
                 .to_string()
         };
 
         let mut stmt = conn.prepare(&query_sql)?;
-        let note_ids: Vec<i64> = stmt
-            .query_map([&fts_query], |row| row.get(0))?
-            .collect::<Result<Vec<i64>, _>>()?;
+        let rows: Vec<(i64, f64)> = stmt
+            .query_map([&fts_query], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<(i64, f64)>, _>>()?;
 
-        // Load full Note objects using get_note (includes tags)
-        let mut notes = Vec::new();
-        for id in note_ids {
+        // Load full Note objects and construct SearchResults with normalized scores
+        let mut results = Vec::new();
+        for (id, raw_score) in rows {
             if let Some(note) = self.get_note(NoteId::new(id))? {
-                notes.push(note);
+                // Normalize BM25 score to 0.0-1.0 range (higher = more relevant)
+                // BM25 returns negative values where more negative = more relevant
+                let relevance_score = 1.0 / (1.0 + raw_score.abs());
+                results.push(SearchResult {
+                    note,
+                    relevance_score,
+                });
             }
         }
 
-        Ok(notes)
+        Ok(results)
     }
 
     /// Updates the enhancement fields for an existing note.

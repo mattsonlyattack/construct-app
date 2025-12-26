@@ -1485,7 +1485,7 @@ fn search_notes_returns_matching_notes() {
     assert_eq!(results.len(), 2, "should find 2 notes containing rust");
 
     // Verify results contain correct notes
-    let contents: Vec<&str> = results.iter().map(|n| n.content()).collect();
+    let contents: Vec<&str> = results.iter().map(|r| r.note.content()).collect();
     assert!(contents.contains(&"Learning Rust programming"));
     assert!(contents.contains(&"Rust and Python comparison"));
 }
@@ -1520,7 +1520,7 @@ fn search_notes_with_and_logic_requires_all_terms() {
         1,
         "should find 1 note with both rust and programming"
     );
-    assert_eq!(results[0].content(), "Rust programming language");
+    assert_eq!(results[0].note.content(), "Rust programming language");
 }
 
 #[test]
@@ -1549,7 +1549,7 @@ fn search_notes_uses_porter_stemming() {
     );
 
     // Verify both notes are in results
-    let result_ids: Vec<_> = results.iter().map(|n| n.id()).collect();
+    let result_ids: Vec<_> = results.iter().map(|r| r.note.id()).collect();
     assert!(result_ids.contains(&note1.id()));
     assert!(result_ids.contains(&note2.id()));
 }
@@ -1592,14 +1592,14 @@ fn search_notes_searches_content_enhanced_and_tags() {
         1,
         "should find note by enhanced content term"
     );
-    assert_eq!(results[0].id(), note1.id());
+    assert_eq!(results[0].note.id(), note1.id());
 
     // Search for tag name
     let tag_results = service
         .search_notes("machine-learning", None)
         .expect("search should succeed");
     assert_eq!(tag_results.len(), 1, "should find note by tag name");
-    assert_eq!(tag_results[0].id(), note1.id());
+    assert_eq!(tag_results[0].note.id(), note1.id());
 }
 
 #[test]
@@ -1674,7 +1674,7 @@ fn search_notes_returns_full_note_objects_with_tags() {
     assert_eq!(results.len(), 1, "should find 1 note");
 
     // Verify full Note object is returned with tags
-    let found_note = &results[0];
+    let found_note = &results[0].note;
     assert_eq!(found_note.id(), note.id());
     assert_eq!(found_note.content(), "Rust tutorial");
     assert_eq!(found_note.tags().len(), 2, "note should include all tags");
@@ -1713,20 +1713,62 @@ fn search_notes_orders_results_by_bm25_relevance() {
     // BM25 orders by ascending score (lower is better), so most relevant should be first
     // Note 2 (3 occurrences) should be most relevant, then note3 (2), then note1 (1)
     assert_eq!(
-        results[0].id(),
+        results[0].note.id(),
         note2.id(),
         "most relevant note (3 occurrences) should be first"
     );
     assert_eq!(
-        results[1].id(),
+        results[1].note.id(),
         note3.id(),
         "second most relevant note (2 occurrences) should be second"
     );
     assert_eq!(
-        results[2].id(),
+        results[2].note.id(),
         note1.id(),
         "least relevant note (1 occurrence) should be last"
     );
+}
+
+
+#[test]
+fn search_result_has_normalized_relevance_score() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with different relevance
+    service
+        .create_note("rust rust rust is amazing for systems", None)
+        .expect("failed to create note 1");
+    service
+        .create_note("learning rust programming", None)
+        .expect("failed to create note 2");
+
+    // Search for "rust"
+    let results = service
+        .search_notes("rust", None)
+        .expect("search should succeed");
+
+    assert_eq!(results.len(), 2, "should find 2 notes");
+
+    // Verify all SearchResults have note and score fields
+    for result in &results {
+        // Verify note is accessible
+        assert!(!result.note.content().is_empty(), "note content should be accessible");
+        
+        // Verify relevance_score is in 0.0-1.0 range
+        assert!(
+            result.relevance_score >= 0.0 && result.relevance_score <= 1.0,
+            "relevance score {} should be between 0.0 and 1.0",
+            result.relevance_score
+        );
+        
+        // Verify score is reasonably high (close to 1.0 for matching results)
+        assert!(
+            result.relevance_score > 0.5,
+            "relevance score {} should be > 0.5 for matching results",
+            result.relevance_score
+        );
+    }
 }
 
 #[test]
