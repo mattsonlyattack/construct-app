@@ -1,34 +1,34 @@
 /// Integration tests for Ollama HTTP client.
 ///
-/// These tests require a running Ollama instance and are marked with `#[ignore]`
-/// so they won't run by default in CI. To run them locally:
+/// These tests require a running Ollama instance. They are automatically
+/// skipped in GitHub Actions CI where Ollama isn't available.
 ///
+/// To run locally (with Ollama running):
 /// ```bash
-/// cargo test --test ollama_integration -- --ignored
-/// ```
-///
-/// Or to run all tests including ignored ones:
-///
-/// ```bash
-/// cargo test -- --include-ignored
+/// cargo test --test ollama_integration
 /// ```
 use cons::{OllamaClientBuilder, OllamaClientTrait};
+
+/// Skip test if running in GitHub Actions
+fn skip_in_ci() -> bool {
+    if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+        println!("Skipping test in GitHub Actions (no Ollama available)");
+        return true;
+    }
+    false
+}
 
 /// Test that the Ollama client can successfully call a real Ollama instance.
 ///
 /// This test requires:
 /// - Ollama running locally (default: http://172.17.64.1:11434 or OLLAMA_HOST env var)
-/// - A model available (specify via OLLAMA_MODEL env var, defaults to checking common models)
-///
-/// This test is ignored by default and won't run in CI.
-///
-/// To run with a specific model:
-/// ```bash
-/// OLLAMA_MODEL=your-model-name cargo test --test ollama_integration -- --ignored
-/// ```
+/// - A model available (specify via OLLAMA_MODEL env var, or auto-detects)
 #[test]
-#[ignore]
 fn generate_with_real_ollama_instance() {
+    if skip_in_ci() {
+        return;
+    }
+
     // Build client using default configuration
     let client = OllamaClientBuilder::new()
         .build()
@@ -95,8 +95,11 @@ fn generate_with_real_ollama_instance() {
 /// This test verifies that the client properly handles the case where Ollama
 /// is not available, which is important for fail-safe behavior.
 #[test]
-#[ignore]
 fn generate_handles_missing_ollama_gracefully() {
+    if skip_in_ci() {
+        return;
+    }
+
     // Use a non-existent host to simulate Ollama not being available
     // Using a valid URL format but a host that won't respond
     let client = OllamaClientBuilder::new()

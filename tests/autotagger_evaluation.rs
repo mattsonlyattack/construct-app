@@ -1,17 +1,26 @@
 //! Auto-tagger evaluation tests.
 //!
 //! This test file provides evaluation tests for the auto-tagger prompt engineering.
-//! Some tests may be ignored for CI and require running Ollama locally.
+//! Tests that require Ollama are automatically skipped in GitHub Actions CI.
 //!
-//! To run ignored tests locally:
+//! To run all tests locally (with Ollama running):
 //! ```bash
-//! cargo test --test autotagger_evaluation -- --ignored
+//! cargo test --test autotagger_evaluation
 //! ```
 
 use std::sync::Arc;
 
-use cons::autotagger::{AutoTaggerBuilder, compare_tags, load_corpus};
+use cons::autotagger::{compare_tags, load_corpus, AutoTaggerBuilder};
 use cons::ollama::{OllamaClientTrait, OllamaError};
+
+/// Skip test if running in GitHub Actions
+fn skip_in_ci() -> bool {
+    if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+        println!("Skipping test in GitHub Actions (no Ollama available)");
+        return true;
+    }
+    false
+}
 
 /// Mock Ollama client for testing.
 struct MockOllamaClient {
@@ -86,7 +95,7 @@ fn test_tag_extraction_on_sample_with_mock() {
 
     // Create mock client that returns expected JSON format
     let mock_response =
-        format!(r#"{{"rust": 0.95, "async": 0.9, "tokio": 0.85, "concurrency": 0.75}}"#);
+        r#"{"rust": 0.95, "async": 0.9, "tokio": 0.85, "concurrency": 0.75}"#.to_string();
     let mock = MockOllamaClient {
         response: mock_response,
     };
@@ -113,19 +122,17 @@ fn test_tag_extraction_on_sample_with_mock() {
     assert_eq!(recall, 1.0, "Mock should produce perfect recall");
 }
 
-/// Integration test with real Ollama (ignored by default).
+/// Integration test with real Ollama.
 ///
 /// This test requires:
 /// - Ollama running locally
 /// - A model available (e.g., gemma3:4b or deepseek-r1:8b)
-///
-/// To run this test:
-/// ```bash
-/// cargo test --test autotagger_evaluation -- --ignored test_real_ollama_integration
-/// ```
 #[test]
-#[ignore]
 fn test_real_ollama_integration() {
+    if skip_in_ci() {
+        return;
+    }
+
     use cons::ollama::OllamaClientBuilder;
 
     // Create real Ollama client
@@ -193,7 +200,7 @@ fn test_real_ollama_integration() {
     }
 }
 
-/// Comprehensive evaluation test against full corpus (ignored by default).
+/// Comprehensive evaluation test against full corpus.
 ///
 /// Evaluates tag extraction quality across all corpus entries using eval.rs metrics.
 /// This test can catch LLM regressions by comparing actual vs expected tags.
@@ -201,14 +208,12 @@ fn test_real_ollama_integration() {
 /// Requires:
 /// - Ollama running locally
 /// - Model available (set via OLLAMA_MODEL env var, defaults to gemma3:4b)
-///
-/// To run:
-/// ```bash
-/// cargo test --test autotagger_evaluation -- --ignored test_evaluate_full_corpus
-/// ```
 #[test]
-#[ignore]
 fn test_evaluate_full_corpus() {
+    if skip_in_ci() {
+        return;
+    }
+
     use cons::ollama::OllamaClientBuilder;
 
     // Create real Ollama client
