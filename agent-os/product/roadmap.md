@@ -34,7 +34,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 16. [x] Alias-expanded FTS -- Integrate tag_aliases into search queries, expanding "ML" to "ML OR machine-learning OR machine learning" before FTS5 matching; automatic synonym bridging `S`
 
-17. [ ] Graph schema foundation -- Create edges table with confidence (REAL), hierarchy_type ('generic'|'partitive'|NULL), valid_from/valid_until (TIMESTAMP nullable); enables spreading activation and temporal queries `M`
+17. [x] Graph schema foundation -- Create edges table with confidence (REAL), hierarchy_type ('generic'|'partitive'|NULL), valid_from/valid_until (TIMESTAMP nullable); enables spreading activation and temporal queries `M`
 
 18. [ ] Tag hierarchy population -- LLM suggests broader/narrower relationships between existing tags with confidence scores; user confirms via CLI; distinguish generic (is-a: "transformer" specializes "neural-network") from partitive (part-of: "attention" isPartOf "transformer") using XKOS semantics `M`
 

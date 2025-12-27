@@ -45,6 +45,26 @@ CREATE TABLE IF NOT EXISTS tag_aliases (
     FOREIGN KEY (canonical_tag_id) REFERENCES tags(id) ON DELETE CASCADE
 );
 
+-- Edges table: stores weighted, typed, temporal relationships between tags
+-- Enables spreading activation retrieval and historical knowledge queries
+-- Uses XKOS hierarchy semantics: generic (is-a), partitive (part-of), or NULL (non-hierarchical)
+CREATE TABLE IF NOT EXISTS edges (
+    id INTEGER PRIMARY KEY,
+    source_tag_id INTEGER NOT NULL,
+    target_tag_id INTEGER NOT NULL,
+    confidence REAL,
+    hierarchy_type TEXT CHECK (hierarchy_type IN ('generic', 'partitive')),
+    valid_from INTEGER,
+    valid_until INTEGER,
+    source TEXT DEFAULT 'user',
+    model_version TEXT,
+    verified INTEGER DEFAULT 0,
+    created_at INTEGER,
+    updated_at INTEGER,
+    FOREIGN KEY (source_tag_id) REFERENCES tags(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_tag_id) REFERENCES tags(id) ON DELETE CASCADE
+);
+
 -- Index for sorting notes by creation date
 CREATE INDEX IF NOT EXISTS idx_notes_created ON notes(created_at);
 
@@ -54,6 +74,13 @@ CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag_id);
 
 -- Index for efficient tag alias lookup by canonical tag
 CREATE INDEX IF NOT EXISTS idx_tag_aliases_canonical ON tag_aliases(canonical_tag_id);
+
+-- Indexes for efficient edges table queries
+CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source_tag_id);
+CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_tag_id);
+CREATE INDEX IF NOT EXISTS idx_edges_created_at ON edges(created_at);
+CREATE INDEX IF NOT EXISTS idx_edges_updated_at ON edges(updated_at);
+CREATE INDEX IF NOT EXISTS idx_edges_hierarchy_type ON edges(hierarchy_type);
 "#;
 
 /// Schema migrations for adding new columns to existing tables.

@@ -1,0 +1,13 @@
+task_groups:
+  - name: Edges Table Schema
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Edges Table Indexes
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Integration Tests and Verification
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
