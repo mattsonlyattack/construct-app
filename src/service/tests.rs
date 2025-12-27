@@ -1754,14 +1754,14 @@ fn search_result_has_normalized_relevance_score() {
     for result in &results {
         // Verify note is accessible
         assert!(!result.note.content().is_empty(), "note content should be accessible");
-        
+
         // Verify relevance_score is in 0.0-1.0 range
         assert!(
             result.relevance_score >= 0.0 && result.relevance_score <= 1.0,
             "relevance score {} should be between 0.0 and 1.0",
             result.relevance_score
         );
-        
+
         // Verify score is reasonably high (close to 1.0 for matching results)
         assert!(
             result.relevance_score > 0.5,
@@ -1835,4 +1835,554 @@ fn list_notes_works_independently_of_fts_functionality() {
             "notes should include their tags even without FTS"
         );
     }
+}
+
+// --- Alias Expansion Tests (Task Group 1: Alias Expansion Logic) ---
+
+#[test]
+fn expand_search_term_no_aliases_returns_only_original_term() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // No aliases or tags exist
+    let expanded = service
+        .expand_search_term("rust")
+        .expect("expansion should succeed");
+
+    assert_eq!(expanded.len(), 1, "should return only original term");
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should contain original term"
+    );
+}
+
+#[test]
+fn expand_search_term_alias_expands_to_canonical() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Expand alias
+    let expanded = service
+        .expand_search_term("ml")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"ml".to_string()),
+        "should contain original alias"
+    );
+    assert!(
+        expanded.contains(&"machine-learning".to_string()),
+        "should contain canonical tag name"
+    );
+}
+
+#[test]
+fn expand_search_term_canonical_expands_to_all_aliases() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and multiple aliases
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create ml alias");
+    service
+        .create_alias("ai-ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create ai-ml alias");
+
+    // Expand canonical tag name
+    let expanded = service
+        .expand_search_term("machine-learning")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"machine-learning".to_string()),
+        "should contain canonical tag"
+    );
+    assert!(
+        expanded.contains(&"ml".to_string()),
+        "should contain ml alias"
+    );
+    assert!(
+        expanded.contains(&"ai-ml".to_string()),
+        "should contain ai-ml alias"
+    );
+}
+
+#[test]
+fn expand_search_term_user_aliases_always_included() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create user alias with low confidence (should still be included)
+    service
+        .create_alias("ml", ml_tag, "user", 0.5, None)
+        .expect("failed to create alias");
+
+    // Expand from canonical
+    let expanded = service
+        .expand_search_term("machine-learning")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"ml".to_string()),
+        "user alias should be included regardless of confidence"
+    );
+}
+
+#[test]
+fn expand_search_term_llm_alias_high_confidence_included() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create LLM alias with confidence >= 0.8
+    service
+        .create_alias("ml", ml_tag, "llm", 0.85, Some("deepseek-r1:8b"))
+        .expect("failed to create alias");
+
+    // Expand from canonical
+    let expanded = service
+        .expand_search_term("machine-learning")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"ml".to_string()),
+        "LLM alias with confidence >= 0.8 should be included"
+    );
+}
+
+#[test]
+fn expand_search_term_llm_alias_low_confidence_excluded() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create LLM alias with confidence < 0.8
+    service
+        .create_alias("ml", ml_tag, "llm", 0.75, Some("deepseek-r1:8b"))
+        .expect("failed to create alias");
+
+    // Expand from canonical
+    let expanded = service
+        .expand_search_term("machine-learning")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"machine-learning".to_string()),
+        "should contain original canonical term"
+    );
+    assert!(
+        !expanded.contains(&"ml".to_string()),
+        "LLM alias with confidence < 0.8 should be excluded"
+    );
+}
+
+// --- Search Integration with Alias Expansion Tests (Task Group 2: Search Integration) ---
+
+#[test]
+fn search_for_alias_term_finds_notes_with_canonical_tag() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create note with canonical tag
+    let note = service
+        .create_note("Deep learning tutorial", Some(&["machine-learning"]))
+        .expect("failed to create note");
+
+    // Search using alias term "ml" - should find note tagged with "machine-learning"
+    let results = service
+        .search_notes("ml", None)
+        .expect("search should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "searching for alias 'ml' should find note with 'machine-learning' tag"
+    );
+    assert_eq!(results[0].note.id(), note.id());
+}
+
+#[test]
+fn search_for_canonical_term_finds_notes_with_alias_tags() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create a note that has "ml" in content (simulating a note where user mentioned the alias)
+    // Note: When user creates note with tag "ml", it gets resolved to "machine-learning"
+    // So we need to test via content search
+    let note = service
+        .create_note("Learning about ML algorithms", Some(&["machine-learning"]))
+        .expect("failed to create note");
+
+    // Search for canonical term should find notes
+    let results = service
+        .search_notes("machine-learning", None)
+        .expect("search should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "searching for canonical term should find note"
+    );
+    assert_eq!(results[0].note.id(), note.id());
+
+    // Now test the reverse: search for "ml" finds note with content mentioning ML
+    let alias_results = service
+        .search_notes("ml", None)
+        .expect("search should succeed");
+
+    assert!(
+        !alias_results.is_empty(),
+        "searching for 'ml' should find note"
+    );
+}
+
+#[test]
+fn multi_term_search_expands_each_term_independently() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tags and aliases
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create ml tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create ml alias");
+
+    let nlp_tag = service
+        .get_or_create_tag("natural-language-processing")
+        .expect("failed to create nlp tag");
+    service
+        .create_alias("nlp", nlp_tag, "user", 1.0, None)
+        .expect("failed to create nlp alias");
+
+    // Create note with both canonical tags
+    let note = service
+        .create_note(
+            "NLP and ML research",
+            Some(&["machine-learning", "natural-language-processing"]),
+        )
+        .expect("failed to create note");
+
+    // Create another note with only one tag
+    service
+        .create_note("Just ML stuff", Some(&["machine-learning"]))
+        .expect("failed to create note 2");
+
+    // Search using both alias terms - should use AND logic between expanded groups
+    let results = service
+        .search_notes("ml nlp", None)
+        .expect("search should succeed");
+
+    // Should find only the note with both tags
+    assert_eq!(
+        results.len(),
+        1,
+        "multi-term search should find note with both expanded terms"
+    );
+    assert_eq!(results[0].note.id(), note.id());
+}
+
+#[test]
+fn multi_word_alias_handled_as_phrase_match() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and aliases
+    // Use a canonical tag name that won't conflict with the alias normalization
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create the single-word alias first
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create ml alias");
+
+    // Create note with content mentioning "machine learning" (multi-word)
+    let note = service
+        .create_note(
+            "Studies in machine learning are fascinating",
+            Some(&["machine-learning"]),
+        )
+        .expect("failed to create note");
+
+    // Search for single-word alias "ml" should find note via alias expansion
+    let results = service
+        .search_notes("ml", None)
+        .expect("search should succeed");
+
+    assert!(
+        !results.is_empty(),
+        "search should find note via alias expansion"
+    );
+    assert_eq!(results[0].note.id(), note.id());
+}
+
+#[test]
+fn search_without_aliases_passes_through_unchanged() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes without any aliases defined
+    let note = service
+        .create_note("Rust programming is great", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // Search for a term that has no aliases
+    let results = service
+        .search_notes("rust", None)
+        .expect("search should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "search should work normally when no aliases exist"
+    );
+    assert_eq!(results[0].note.id(), note.id());
+}
+
+#[test]
+fn search_with_alias_expansion_preserves_bm25_scoring() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create notes with different content
+    service
+        .create_note(
+            "machine-learning machine-learning machine-learning",
+            Some(&["machine-learning"]),
+        )
+        .expect("failed to create highly relevant note");
+
+    service
+        .create_note("Just one mention of ml", Some(&["machine-learning"]))
+        .expect("failed to create less relevant note");
+
+    // Search using alias term
+    let results = service
+        .search_notes("ml", None)
+        .expect("search should succeed");
+
+    assert_eq!(results.len(), 2, "should find both notes");
+
+    // Verify SearchResult structure is preserved with valid scores
+    for result in &results {
+        assert!(
+            result.relevance_score >= 0.0 && result.relevance_score <= 1.0,
+            "relevance score {} should be normalized between 0.0 and 1.0",
+            result.relevance_score
+        );
+        assert!(
+            !result.note.content().is_empty(),
+            "note content should be accessible"
+        );
+    }
+
+    // Verify both notes were found (order may vary due to OR expansion behavior)
+    let contents: Vec<&str> = results.iter().map(|r| r.note.content()).collect();
+    assert!(
+        contents.contains(&"machine-learning machine-learning machine-learning"),
+        "should find note with multiple machine-learning occurrences"
+    );
+    assert!(
+        contents.contains(&"Just one mention of ml"),
+        "should find note with ml mention"
+    );
+}
+
+// --- Additional Strategic Tests for Alias-Expanded FTS (Task Group 3: Gap Analysis) ---
+
+#[test]
+fn expand_search_term_case_insensitive_lookup() {
+    // Tests case sensitivity handling in expansion
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Expand using different case variants
+    let expanded_lower = service
+        .expand_search_term("ml")
+        .expect("expansion should succeed");
+    let expanded_upper = service
+        .expand_search_term("ML")
+        .expect("expansion should succeed");
+    let expanded_mixed = service
+        .expand_search_term("Ml")
+        .expect("expansion should succeed");
+
+    // All should produce same expansion (contain both ml and machine-learning)
+    assert!(
+        expanded_lower.contains(&"machine-learning".to_string()),
+        "lowercase should expand to canonical"
+    );
+    assert!(
+        expanded_upper.contains(&"machine-learning".to_string()),
+        "uppercase should expand to canonical"
+    );
+    assert!(
+        expanded_mixed.contains(&"machine-learning".to_string()),
+        "mixed case should expand to canonical"
+    );
+}
+
+#[test]
+fn expand_search_term_with_special_characters_normalized() {
+    // Tests expansion with special characters in alias names
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag
+    let cpp_tag = service
+        .get_or_create_tag("cpp")
+        .expect("failed to create tag");
+
+    // Create alias with special characters (will be normalized)
+    // "c++" normalizes to "c" due to TagNormalizer stripping non-alphanumeric
+    service
+        .create_alias("cplusplus", cpp_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Expand "cpp" should find the canonical tag and its aliases
+    let expanded = service
+        .expand_search_term("cpp")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"cpp".to_string()),
+        "should contain canonical tag"
+    );
+    assert!(
+        expanded.contains(&"cplusplus".to_string()),
+        "should contain cplusplus alias"
+    );
+}
+
+#[test]
+fn search_alias_in_enhanced_content() {
+    // Tests integration with enhanced content search via alias expansion
+    use time::OffsetDateTime;
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create note with original content
+    let note = service
+        .create_note("Quick note", Some(&["machine-learning"]))
+        .expect("failed to create note");
+
+    // Add enhanced content mentioning the canonical term
+    let now = OffsetDateTime::now_utc();
+    service
+        .update_note_enhancement(
+            note.id(),
+            "This is about machine-learning algorithms and neural networks",
+            "deepseek-r1:8b",
+            0.9,
+            now,
+        )
+        .expect("failed to update enhancement");
+
+    // Search using alias "ml" should find note via expansion to "machine-learning"
+    let results = service
+        .search_notes("ml", None)
+        .expect("search should succeed");
+
+    assert_eq!(
+        results.len(),
+        1,
+        "alias search should find note via enhanced content expansion"
+    );
+    assert_eq!(results[0].note.id(), note.id());
+}
+
+#[test]
+fn expand_search_term_exact_confidence_boundary() {
+    // Tests LLM alias at exactly 0.8 confidence threshold
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create LLM alias with exactly 0.8 confidence (should be included)
+    service
+        .create_alias("ml", ml_tag, "llm", 0.8, Some("deepseek-r1:8b"))
+        .expect("failed to create alias");
+
+    // Expand from canonical - should include the alias at exactly 0.8
+    let expanded = service
+        .expand_search_term("machine-learning")
+        .expect("expansion should succeed");
+
+    assert!(
+        expanded.contains(&"ml".to_string()),
+        "LLM alias with confidence exactly 0.8 should be included"
+    );
 }

@@ -920,11 +920,173 @@ impl NoteService {
         Ok(())
     }
 
+    /// Expands a search term to include all related aliases and canonical forms.
+    ///
+    /// Performs bi-directional alias expansion:
+    /// - If the term is an alias, includes the canonical tag name
+    /// - If the term matches a canonical tag, includes all its aliases
+    ///
+    /// Applies confidence-based filtering:
+    /// - User-created aliases (source = 'user') are always included
+    /// - LLM-suggested aliases (source = 'llm') are only included if confidence >= 0.8
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The search term to expand
+    ///
+    /// # Returns
+    ///
+    /// A vector of unique expansion terms including the original term.
+    /// Returns only the original term if no aliases exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create canonical tag and aliases
+    /// let ml_tag = service.get_or_create_tag("machine-learning")?;
+    /// service.create_alias("ml", ml_tag, "user", 1.0, None)?;
+    ///
+    /// // Expand alias -> includes canonical
+    /// let expanded = service.expand_search_term("ml")?;
+    /// assert!(expanded.contains(&"ml".to_string()));
+    /// assert!(expanded.contains(&"machine-learning".to_string()));
+    ///
+    /// // Expand canonical -> includes aliases
+    /// let expanded = service.expand_search_term("machine-learning")?;
+    /// assert!(expanded.contains(&"machine-learning".to_string()));
+    /// assert!(expanded.contains(&"ml".to_string()));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn expand_search_term(&self, term: &str) -> Result<Vec<String>> {
+        use std::collections::HashSet;
+
+        // Normalize the input term
+        let normalized = TagNormalizer::normalize_tag(term);
+        let conn = self.db.connection();
+
+        let mut expansions = HashSet::new();
+        // Always include the original normalized term
+        expansions.insert(normalized.clone());
+
+        // Check if term is an alias -> get canonical_tag_id
+        let alias_canonical_id: Option<i64> = conn
+            .query_row(
+                "SELECT canonical_tag_id FROM tag_aliases WHERE alias = ?1 COLLATE NOCASE",
+                [&normalized],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(canonical_id) = alias_canonical_id {
+            // Term is an alias - get the canonical tag name
+            let canonical_name: Option<String> = conn
+                .query_row(
+                    "SELECT name FROM tags WHERE id = ?1",
+                    [canonical_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            if let Some(name) = canonical_name {
+                expansions.insert(name);
+            }
+
+            // Also get all other aliases for this canonical tag (with confidence filtering)
+            let mut stmt = conn.prepare(
+                "SELECT alias FROM tag_aliases
+                 WHERE canonical_tag_id = ?1
+                   AND (source = 'user' OR (source = 'llm' AND confidence >= 0.8))",
+            )?;
+
+            let alias_rows = stmt.query_map([canonical_id], |row| row.get::<_, String>(0))?;
+
+            for alias_result in alias_rows {
+                expansions.insert(alias_result?);
+            }
+        }
+
+        // Check if term matches a canonical tag name
+        let canonical_tag_id: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+                [&normalized],
+                |row| row.get(0),
+            )
+            .optional()?;
+
+        if let Some(tag_id) = canonical_tag_id {
+            // Term is a canonical tag - get all its aliases (with confidence filtering)
+            let mut stmt = conn.prepare(
+                "SELECT alias FROM tag_aliases
+                 WHERE canonical_tag_id = ?1
+                   AND (source = 'user' OR (source = 'llm' AND confidence >= 0.8))",
+            )?;
+
+            let alias_rows = stmt.query_map([tag_id], |row| row.get::<_, String>(0))?;
+
+            for alias_result in alias_rows {
+                expansions.insert(alias_result?);
+            }
+        }
+
+        Ok(expansions.into_iter().collect())
+    }
+
+    /// Builds an FTS5 query fragment with alias expansion for a single term.
+    ///
+    /// Expands the term using `expand_search_term()` and formats the result
+    /// as an FTS5 OR expression with proper quoting:
+    /// - All terms are quoted for exact matching
+    /// - Multi-word aliases use phrase matching
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The search term to expand and format
+    ///
+    /// # Returns
+    ///
+    /// An FTS5 query fragment. For single term: `"term"`.
+    /// For multiple expansions with OR: `("ml" OR "machine-learning")`.
+    fn build_expanded_fts_term(&self, term: &str) -> Result<String> {
+        let expansions = self.expand_search_term(term)?;
+
+        if expansions.len() == 1 {
+            // Single term - just escape and quote it
+            let escaped = expansions[0].replace('"', "\"\"");
+            return Ok(format!("\"{}\"", escaped));
+        }
+
+        // Multiple expansions - build OR group with proper FTS5 syntax
+        // FTS5 requires: ("term1" OR "term2" OR "term3")
+        let formatted_terms: Vec<String> = expansions
+            .iter()
+            .map(|expansion| {
+                // Escape quotes and wrap in quotes
+                let escaped = expansion.replace('"', "\"\"");
+                format!("\"{}\"", escaped)
+            })
+            .collect();
+
+        // Use parentheses for grouping OR expressions in FTS5
+        Ok(format!("({})", formatted_terms.join(" OR ")))
+    }
+
     /// Searches for notes using full-text search across content, enhanced content, and tags.
     ///
     /// Uses SQLite FTS5 with BM25 relevance ranking to find notes matching the search query.
     /// All search terms must match (AND logic). Porter stemming automatically handles word
     /// variations (e.g., "running" matches "run").
+    ///
+    /// **Alias Expansion**: Before executing the search, each term is expanded using
+    /// the `tag_aliases` table. For example, searching for "ML" will also match notes
+    /// tagged with "machine-learning" if an alias relationship exists.
     ///
     /// Returns `SearchResult` objects containing the note and a normalized relevance score
     /// (0.0-1.0, higher = more relevant). The score enables dual-channel retrieval where
@@ -975,17 +1137,19 @@ impl NoteService {
             anyhow::bail!("Search query cannot be empty");
         }
 
-        // Process query: split on whitespace, escape each term, join with spaces for AND logic
-        let terms: Vec<String> = trimmed_query
-            .split_whitespace()
-            .map(|term| {
-                // Escape double quotes by doubling them, then wrap term in quotes
-                let escaped = term.replace('"', "\"\"");
-                format!("\"{}\"", escaped)
-            })
+        // Split query into terms and expand each with alias expansion
+        let terms: Vec<&str> = trimmed_query.split_whitespace().collect();
+
+        // Build FTS5 query with alias expansion for each term
+        // AND logic between original query terms, OR within expansions
+        let expanded_terms: Result<Vec<String>> = terms
+            .iter()
+            .map(|term| self.build_expanded_fts_term(term))
             .collect();
 
-        let fts_query = terms.join(" ");
+        // Join with explicit AND for FTS5 when using parenthesized OR groups
+        // FTS5 syntax requires explicit AND between parenthesized groups
+        let fts_query = expanded_terms?.join(" AND ");
 
         let conn = self.db.connection();
 

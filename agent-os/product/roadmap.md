@@ -32,7 +32,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 15. [x] Full-text search with FTS5 -- Implement SQLite FTS5 virtual table for content search, with `cons search "query"` command; foundation for dual-channel retrieval `M`
 
-16. [ ] Alias-expanded FTS -- Integrate tag_aliases into search queries, expanding "ML" to "ML OR machine-learning OR machine learning" before FTS5 matching; automatic synonym bridging `S`
+16. [x] Alias-expanded FTS -- Integrate tag_aliases into search queries, expanding "ML" to "ML OR machine-learning OR machine learning" before FTS5 matching; automatic synonym bridging `S`
 
 17. [ ] Graph schema foundation -- Create edges table with confidence (REAL), hierarchy_type ('generic'|'partitive'|NULL), valid_from/valid_until (TIMESTAMP nullable); enables spreading activation and temporal queries `M`
 
