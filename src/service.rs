@@ -1262,6 +1262,238 @@ impl NoteService {
 
         Ok(())
     }
+
+    /// Gets all tags that have at least one associated note.
+    ///
+    /// Queries the tags table using JOIN with note_tags to filter for tags
+    /// that are actually used. Orphan tags (tags with no notes) are excluded.
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of tuples containing (TagId, tag name) for each tag
+    /// with associated notes, ordered by tag name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create notes with tags
+    /// service.create_note("Rust note", Some(&["rust"]))?;
+    /// service.create_note("Python note", Some(&["python"]))?;
+    ///
+    /// // Get tags with notes
+    /// let tags = service.get_tags_with_notes()?;
+    /// assert_eq!(tags.len(), 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_tags_with_notes(&self) -> Result<Vec<(TagId, String)>> {
+        let conn = self.db.connection();
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT t.id, t.name
+             FROM tags t
+             JOIN note_tags nt ON t.id = nt.tag_id
+             ORDER BY t.name",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            Ok((TagId::new(id), name))
+        })?;
+
+        let mut tags = Vec::new();
+        for row_result in rows {
+            tags.push(row_result?);
+        }
+
+        Ok(tags)
+    }
+
+    /// Creates an edge between two tags in the hierarchy.
+    ///
+    /// Inserts a directed edge from source_tag_id (narrower/child concept) to
+    /// target_tag_id (broader/parent concept). Uses INSERT OR IGNORE for
+    /// idempotent operation - duplicate edges are silently ignored.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_tag_id` - The narrower/child tag (more specific concept)
+    /// * `target_tag_id` - The broader/parent tag (more general concept)
+    /// * `confidence` - Confidence score (0.0-1.0)
+    /// * `hierarchy_type` - "generic" for is-a relationships, "partitive" for part-of
+    /// * `model_version` - Optional LLM model identifier (e.g., "deepseek-r1:8b")
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tags
+    /// let transformer = service.get_or_create_tag("transformer")?;
+    /// let neural_network = service.get_or_create_tag("neural-network")?;
+    ///
+    /// // Create generic edge: transformer specializes neural-network
+    /// service.create_edge(
+    ///     transformer,
+    ///     neural_network,
+    ///     0.9,
+    ///     "generic",
+    ///     Some("deepseek-r1:8b"),
+    /// )?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_edge(
+        &self,
+        source_tag_id: TagId,
+        target_tag_id: TagId,
+        confidence: f64,
+        hierarchy_type: &str,
+        model_version: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.db.connection();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+
+        // Validate both tag IDs exist
+        let source_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tags WHERE id = ?1)",
+            [source_tag_id.get()],
+            |row| row.get(0),
+        )?;
+
+        let target_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tags WHERE id = ?1)",
+            [target_tag_id.get()],
+            |row| row.get(0),
+        )?;
+
+        if !source_exists {
+            anyhow::bail!("Source tag with id {} does not exist", source_tag_id);
+        }
+
+        if !target_exists {
+            anyhow::bail!("Target tag with id {} does not exist", target_tag_id);
+        }
+
+        // Check if edge already exists (for idempotent operation)
+        // We only check for edges with NULL temporal validity (hierarchy edges)
+        let exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM edges
+             WHERE source_tag_id = ?1 AND target_tag_id = ?2
+               AND valid_from IS NULL AND valid_until IS NULL)",
+            [source_tag_id.get(), target_tag_id.get()],
+            |row| row.get(0),
+        )?;
+
+        if exists {
+            // Edge already exists, skip insert (idempotent)
+            return Ok(());
+        }
+
+        // Insert edge
+        conn.execute(
+            "INSERT INTO edges
+             (source_tag_id, target_tag_id, confidence, hierarchy_type, source, model_version, verified, created_at, updated_at, valid_from, valid_until)
+             VALUES (?1, ?2, ?3, ?4, 'llm', ?5, 0, ?6, ?6, NULL, NULL)",
+            rusqlite::params![
+                source_tag_id.get(),
+                target_tag_id.get(),
+                confidence,
+                hierarchy_type,
+                model_version,
+                now,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    /// Creates multiple edges atomically in a single transaction.
+    ///
+    /// Wraps multiple create_edge calls in a transaction for atomicity.
+    /// If any edge creation fails, all changes are rolled back.
+    ///
+    /// # Arguments
+    ///
+    /// * `edges` - Slice of tuples containing (source_tag_id, target_tag_id, confidence, hierarchy_type, model_version)
+    ///
+    /// # Returns
+    ///
+    /// Returns the count of edges created (for CLI output).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tags
+    /// let tag1 = service.get_or_create_tag("tag1")?;
+    /// let tag2 = service.get_or_create_tag("tag2")?;
+    /// let tag3 = service.get_or_create_tag("tag3")?;
+    ///
+    /// // Create edges in batch
+    /// let edges = vec![
+    ///     (tag1, tag2, 0.9, "generic", Some("deepseek-r1:8b")),
+    ///     (tag2, tag3, 0.85, "partitive", Some("deepseek-r1:8b")),
+    /// ];
+    ///
+    /// let count = service.create_edges_batch(&edges)?;
+    /// assert_eq!(count, 2);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn create_edges_batch(
+        &self,
+        edges: &[(TagId, TagId, f64, &str, Option<&str>)],
+    ) -> Result<usize> {
+        let conn = self.db.connection();
+
+        // Use a transaction for atomicity
+        conn.execute("BEGIN TRANSACTION", [])?;
+
+        let result: Result<usize> = (|| {
+            let mut count = 0;
+
+            for (source_tag_id, target_tag_id, confidence, hierarchy_type, model_version) in edges {
+                self.create_edge(
+                    *source_tag_id,
+                    *target_tag_id,
+                    *confidence,
+                    hierarchy_type,
+                    *model_version,
+                )?;
+                count += 1;
+            }
+
+            Ok(count)
+        })();
+
+        match result {
+            Ok(count) => {
+                conn.execute("COMMIT", [])?;
+                Ok(count)
+            }
+            Err(e) => {
+                conn.execute("ROLLBACK", []).ok();
+                Err(e)
+            }
+        }
+    }
 }
 
 /// Sort order for listing notes.

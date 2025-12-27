@@ -1729,7 +1729,6 @@ fn search_notes_orders_results_by_bm25_relevance() {
     );
 }
 
-
 #[test]
 fn search_result_has_normalized_relevance_score() {
     let db = Database::in_memory().expect("failed to create in-memory database");
@@ -1753,7 +1752,10 @@ fn search_result_has_normalized_relevance_score() {
     // Verify all SearchResults have note and score fields
     for result in &results {
         // Verify note is accessible
-        assert!(!result.note.content().is_empty(), "note content should be accessible");
+        assert!(
+            !result.note.content().is_empty(),
+            "note content should be accessible"
+        );
 
         // Verify relevance_score is in 0.0-1.0 range
         assert!(
@@ -1814,18 +1816,16 @@ fn list_notes_works_independently_of_fts_functionality() {
         .list_notes(ListNotesOptions::default())
         .expect("list_notes should succeed even without FTS table");
 
-    assert_eq!(notes.len(), 2, "should list all notes despite FTS being gone");
+    assert_eq!(
+        notes.len(),
+        2,
+        "should list all notes despite FTS being gone"
+    );
 
     // Verify we got the correct notes
     let note_ids: Vec<_> = notes.iter().map(|n| n.id()).collect();
-    assert!(
-        note_ids.contains(&note1.id()),
-        "should include first note"
-    );
-    assert!(
-        note_ids.contains(&note2.id()),
-        "should include second note"
-    );
+    assert!(note_ids.contains(&note1.id()), "should include first note");
+    assert!(note_ids.contains(&note2.id()), "should include second note");
 
     // Verify notes have their tags
     for note in &notes {
@@ -2282,6 +2282,291 @@ fn expand_search_term_case_insensitive_lookup() {
     );
 }
 
+// --- Edge Creation Tests (Task Group 2: Edge Creation in NoteService) ---
+
+#[test]
+fn get_tags_with_notes_returns_only_tags_with_associated_notes() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags with notes
+    service
+        .create_note("Note about Rust", Some(&["rust"]))
+        .expect("failed to create note 1");
+    service
+        .create_note("Note about Python", Some(&["python", "programming"]))
+        .expect("failed to create note 2");
+
+    // Create an orphan tag with no notes
+    let conn = service.database().connection();
+    conn.execute("INSERT INTO tags (name) VALUES ('orphan')", [])
+        .expect("failed to insert orphan tag");
+
+    // Get tags with notes
+    let tags_with_notes = service
+        .get_tags_with_notes()
+        .expect("failed to get tags with notes");
+
+    // Should return 3 tags (rust, python, programming) but NOT orphan
+    assert_eq!(
+        tags_with_notes.len(),
+        3,
+        "should return only tags with associated notes"
+    );
+
+    let tag_names: Vec<String> = tags_with_notes
+        .iter()
+        .map(|(_, name)| name.clone())
+        .collect();
+    assert!(tag_names.contains(&"rust".to_string()));
+    assert!(tag_names.contains(&"python".to_string()));
+    assert!(tag_names.contains(&"programming".to_string()));
+    assert!(!tag_names.contains(&"orphan".to_string()));
+}
+
+#[test]
+fn get_tags_with_notes_returns_empty_when_no_tags_exist() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // No tags or notes
+    let tags = service
+        .get_tags_with_notes()
+        .expect("failed to get tags with notes");
+
+    assert_eq!(tags.len(), 0, "should return empty vec when no tags exist");
+}
+
+#[test]
+fn create_edge_inserts_edge_with_correct_metadata() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let transformer_tag = service
+        .get_or_create_tag("transformer")
+        .expect("failed to create transformer tag");
+    let neural_network_tag = service
+        .get_or_create_tag("neural-network")
+        .expect("failed to create neural-network tag");
+
+    // Create edge: transformer (narrower) -> neural-network (broader)
+    service
+        .create_edge(
+            transformer_tag,
+            neural_network_tag,
+            0.85,
+            "generic",
+            Some("deepseek-r1:8b"),
+        )
+        .expect("failed to create edge");
+
+    // Verify edge was created with correct metadata
+    let conn = service.database().connection();
+    let row: (i64, i64, f64, String, String, i64, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT source_tag_id, target_tag_id, confidence, hierarchy_type, source, verified, valid_from, valid_until
+             FROM edges WHERE source_tag_id = ?1 AND target_tag_id = ?2",
+            [transformer_tag.get(), neural_network_tag.get()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .expect("failed to query edge");
+
+    assert_eq!(row.0, transformer_tag.get(), "source_tag_id should match");
+    assert_eq!(
+        row.1,
+        neural_network_tag.get(),
+        "target_tag_id should match"
+    );
+    assert_eq!(row.2, 0.85, "confidence should match");
+    assert_eq!(row.3, "generic", "hierarchy_type should be generic");
+    assert_eq!(row.4, "llm", "source should be llm");
+    assert_eq!(row.5, 0, "verified should be 0");
+    assert_eq!(row.6, None, "valid_from should be NULL");
+    assert_eq!(row.7, None, "valid_until should be NULL");
+}
+
+#[test]
+fn create_edge_respects_insert_or_ignore_for_duplicates() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let transformer_tag = service
+        .get_or_create_tag("transformer")
+        .expect("failed to create transformer tag");
+    let neural_network_tag = service
+        .get_or_create_tag("neural-network")
+        .expect("failed to create neural-network tag");
+
+    // Create edge first time
+    service
+        .create_edge(
+            transformer_tag,
+            neural_network_tag,
+            0.85,
+            "generic",
+            Some("deepseek-r1:8b"),
+        )
+        .expect("first edge creation should succeed");
+
+    // Create same edge again (should not error due to INSERT OR IGNORE)
+    service
+        .create_edge(
+            transformer_tag,
+            neural_network_tag,
+            0.90,
+            "generic",
+            Some("deepseek-r1:8b"),
+        )
+        .expect("duplicate edge creation should succeed (idempotent)");
+
+    // Verify only one edge exists
+    let conn = service.database().connection();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_tag_id = ?1 AND target_tag_id = ?2",
+            [transformer_tag.get(), neural_network_tag.get()],
+            |row| row.get(0),
+        )
+        .expect("failed to count edges");
+
+    assert_eq!(count, 1, "should have only 1 edge (duplicate ignored)");
+
+    // Verify original confidence is preserved (first insert wins)
+    let confidence: f64 = conn
+        .query_row(
+            "SELECT confidence FROM edges WHERE source_tag_id = ?1 AND target_tag_id = ?2",
+            [transformer_tag.get(), neural_network_tag.get()],
+            |row| row.get(0),
+        )
+        .expect("failed to query confidence");
+
+    assert_eq!(confidence, 0.85, "original confidence should be preserved");
+}
+
+#[test]
+fn create_edge_stores_correct_hierarchy_type() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let attention_tag = service
+        .get_or_create_tag("attention")
+        .expect("failed to create attention tag");
+    let transformer_tag = service
+        .get_or_create_tag("transformer")
+        .expect("failed to create transformer tag");
+    let neural_network_tag = service
+        .get_or_create_tag("neural-network")
+        .expect("failed to create neural-network tag");
+
+    // Create partitive edge: attention (part) -> transformer (whole)
+    service
+        .create_edge(
+            attention_tag,
+            transformer_tag,
+            0.95,
+            "partitive",
+            Some("deepseek-r1:8b"),
+        )
+        .expect("failed to create partitive edge");
+
+    // Create generic edge: transformer (narrower) -> neural-network (broader)
+    service
+        .create_edge(
+            transformer_tag,
+            neural_network_tag,
+            0.90,
+            "generic",
+            Some("deepseek-r1:8b"),
+        )
+        .expect("failed to create generic edge");
+
+    // Verify hierarchy types
+    let conn = service.database().connection();
+
+    let partitive_type: String = conn
+        .query_row(
+            "SELECT hierarchy_type FROM edges WHERE source_tag_id = ?1",
+            [attention_tag.get()],
+            |row| row.get(0),
+        )
+        .expect("failed to query partitive edge");
+    assert_eq!(partitive_type, "partitive");
+
+    let generic_type: String = conn
+        .query_row(
+            "SELECT hierarchy_type FROM edges WHERE source_tag_id = ?1",
+            [transformer_tag.get()],
+            |row| row.get(0),
+        )
+        .expect("failed to query generic edge");
+    assert_eq!(generic_type, "generic");
+}
+
+#[test]
+fn create_edges_batch_uses_transaction_for_atomicity() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let tag1 = service
+        .get_or_create_tag("tag1")
+        .expect("failed to create tag1");
+    let tag2 = service
+        .get_or_create_tag("tag2")
+        .expect("failed to create tag2");
+    let tag3 = service
+        .get_or_create_tag("tag3")
+        .expect("failed to create tag3");
+
+    // Prepare edges
+    let edges = vec![
+        (tag1, tag2, 0.9, "generic", Some("deepseek-r1:8b")),
+        (tag2, tag3, 0.85, "partitive", Some("deepseek-r1:8b")),
+    ];
+
+    // Create edges in batch
+    let count = service
+        .create_edges_batch(&edges)
+        .expect("failed to create edges batch");
+
+    assert_eq!(count, 2, "should create 2 edges");
+
+    // Verify both edges exist
+    let conn = service.database().connection();
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
+        .expect("failed to count edges");
+
+    assert_eq!(total, 2, "should have 2 edges in database");
+}
+
+#[test]
+fn create_edges_batch_returns_zero_for_empty_input() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create edges batch with empty vec
+    let count = service
+        .create_edges_batch(&[])
+        .expect("failed to create empty batch");
+
+    assert_eq!(count, 0, "should return 0 for empty batch");
+}
+
 #[test]
 fn expand_search_term_with_special_characters_normalized() {
     // Tests expansion with special characters in alias names
@@ -2384,5 +2669,452 @@ fn expand_search_term_exact_confidence_boundary() {
     assert!(
         expanded.contains(&"ml".to_string()),
         "LLM alias with confidence exactly 0.8 should be included"
+    );
+}
+
+// --- Hierarchy Population Integration Tests (Task Group 4) ---
+
+#[test]
+fn hierarchy_population_full_end_to_end_workflow() {
+    // Integration test: Full workflow from tags to edges creation
+    use crate::hierarchy::HierarchySuggesterBuilder;
+    use crate::ollama::OllamaClientTrait;
+    use std::sync::Arc;
+
+    struct MockHierarchyClient;
+
+    impl OllamaClientTrait for MockHierarchyClient {
+        fn generate(&self, _model: &str, _prompt: &str) -> Result<String, crate::ollama::OllamaError> {
+            Ok(r#"[
+                {"source_tag": "transformer", "target_tag": "neural-network", "hierarchy_type": "generic", "confidence": 0.95},
+                {"source_tag": "attention", "target_tag": "transformer", "hierarchy_type": "partitive", "confidence": 0.85}
+            ]"#.to_string())
+        }
+    }
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with tags to populate tags table
+    service
+        .create_note("About transformers", Some(&["transformer"]))
+        .expect("failed to create note 1");
+    service
+        .create_note("About neural networks", Some(&["neural-network"]))
+        .expect("failed to create note 2");
+    service
+        .create_note("About attention mechanism", Some(&["attention"]))
+        .expect("failed to create note 3");
+
+    // Step 1: Get tags with notes
+    let tags_with_notes = service
+        .get_tags_with_notes()
+        .expect("failed to get tags with notes");
+    assert_eq!(tags_with_notes.len(), 3, "should have 3 tags with notes");
+
+    // Step 2: Call HierarchySuggester
+    let suggester = HierarchySuggesterBuilder::new()
+        .client(Arc::new(MockHierarchyClient))
+        .build();
+
+    let tag_names: Vec<String> = tags_with_notes
+        .iter()
+        .map(|(_, name)| name.clone())
+        .collect();
+
+    let suggestions = suggester
+        .suggest_relationships("test-model", tag_names)
+        .expect("failed to suggest relationships");
+
+    assert_eq!(suggestions.len(), 2, "should get 2 suggestions");
+
+    // Step 3: Create edges from suggestions
+    let mut edges = Vec::new();
+    for suggestion in &suggestions {
+        let source_id = service
+            .get_or_create_tag(&suggestion.source_tag)
+            .expect("failed to resolve source tag");
+        let target_id = service
+            .get_or_create_tag(&suggestion.target_tag)
+            .expect("failed to resolve target tag");
+
+        edges.push((
+            source_id,
+            target_id,
+            suggestion.confidence,
+            suggestion.hierarchy_type.as_str(),
+            Some("test-model"),
+        ));
+    }
+
+    let created_count = service
+        .create_edges_batch(&edges)
+        .expect("failed to create edges");
+
+    assert_eq!(created_count, 2, "should create 2 edges");
+
+    // Step 4: Verify edges in database
+    let conn = service.database().connection();
+    let edge_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
+        .expect("failed to count edges");
+
+    assert_eq!(edge_count, 2, "should have 2 edges in database");
+
+    // Verify edge direction: source = narrower, target = broader
+    let generic_edge: (String, String) = conn
+        .query_row(
+            "SELECT st.name, tt.name FROM edges e
+             JOIN tags st ON e.source_tag_id = st.id
+             JOIN tags tt ON e.target_tag_id = tt.id
+             WHERE e.hierarchy_type = 'generic'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("failed to query generic edge");
+
+    assert_eq!(
+        generic_edge,
+        ("transformer".to_string(), "neural-network".to_string()),
+        "transformer (narrower) should point to neural-network (broader)"
+    );
+}
+
+#[test]
+fn edge_direction_convention_narrower_to_broader() {
+    // Test that edges follow the direction convention: source=narrower, target=broader
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let python_tag = service
+        .get_or_create_tag("python")
+        .expect("failed to create python tag");
+    let programming_language_tag = service
+        .get_or_create_tag("programming-language")
+        .expect("failed to create programming-language tag");
+
+    // Create edge: python (specific/narrower) -> programming-language (general/broader)
+    service
+        .create_edge(
+            python_tag,
+            programming_language_tag,
+            0.95,
+            "generic",
+            Some("test-model"),
+        )
+        .expect("failed to create edge");
+
+    // Verify edge direction in database
+    let conn = service.database().connection();
+    let (source_name, target_name): (String, String) = conn
+        .query_row(
+            "SELECT st.name, tt.name FROM edges e
+             JOIN tags st ON e.source_tag_id = st.id
+             JOIN tags tt ON e.target_tag_id = tt.id
+             WHERE st.id = ?1 AND tt.id = ?2",
+            [python_tag.get(), programming_language_tag.get()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("failed to query edge");
+
+    assert_eq!(
+        source_name, "python",
+        "source should be narrower/specific concept"
+    );
+    assert_eq!(
+        target_name, "programming-language",
+        "target should be broader/general concept"
+    );
+
+    // Verify no reverse edge exists
+    let reverse_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_tag_id = ?1 AND target_tag_id = ?2",
+            [programming_language_tag.get(), python_tag.get()],
+            |row| row.get(0),
+        )
+        .expect("failed to count reverse edges");
+
+    assert_eq!(
+        reverse_count, 0,
+        "should not have reverse edge (broader -> narrower)"
+    );
+}
+
+#[test]
+fn hierarchy_suggest_idempotency_no_duplicate_edges() {
+    // Test that running suggest twice doesn't duplicate edges
+    use crate::hierarchy::HierarchySuggesterBuilder;
+    use crate::ollama::OllamaClientTrait;
+    use std::sync::Arc;
+
+    struct MockIdempotentClient;
+
+    impl OllamaClientTrait for MockIdempotentClient {
+        fn generate(&self, _model: &str, _prompt: &str) -> Result<String, crate::ollama::OllamaError> {
+            Ok(r#"[
+                {"source_tag": "rust", "target_tag": "programming-language", "hierarchy_type": "generic", "confidence": 0.9}
+            ]"#.to_string())
+        }
+    }
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with tags
+    service
+        .create_note("Rust programming", Some(&["rust", "programming-language"]))
+        .expect("failed to create note");
+
+    let suggester = HierarchySuggesterBuilder::new()
+        .client(Arc::new(MockIdempotentClient))
+        .build();
+
+    // Run suggest first time
+    let tags_with_notes = service
+        .get_tags_with_notes()
+        .expect("failed to get tags");
+    let tag_names: Vec<String> = tags_with_notes
+        .iter()
+        .map(|(_, name)| name.clone())
+        .collect();
+
+    let _suggestions1 = suggester
+        .suggest_relationships("test-model", tag_names.clone())
+        .expect("failed to suggest relationships");
+
+    let rust_id = service.get_or_create_tag("rust").expect("failed to get rust");
+    let pl_id = service
+        .get_or_create_tag("programming-language")
+        .expect("failed to get pl");
+
+    let edges1 = vec![(rust_id, pl_id, 0.9, "generic", Some("test-model"))];
+    service
+        .create_edges_batch(&edges1)
+        .expect("failed to create edges first time");
+
+    // Verify one edge exists
+    let conn = service.database().connection();
+    let count_after_first: i64 = conn
+        .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
+        .expect("failed to count edges");
+    assert_eq!(count_after_first, 1, "should have 1 edge after first run");
+
+    // Run suggest second time (same suggestions)
+    let _suggestions2 = suggester
+        .suggest_relationships("test-model", tag_names)
+        .expect("failed to suggest relationships second time");
+
+    let edges2 = vec![(rust_id, pl_id, 0.9, "generic", Some("test-model"))];
+    service
+        .create_edges_batch(&edges2)
+        .expect("failed to create edges second time");
+
+    // Verify still only one edge (INSERT OR IGNORE prevents duplicates)
+    let count_after_second: i64 = conn
+        .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
+        .expect("failed to count edges");
+    assert_eq!(
+        count_after_second, 1,
+        "should still have 1 edge after second run (no duplicates)"
+    );
+
+    // Verify original edge metadata is preserved
+    let (confidence, hierarchy_type): (f64, String) = conn
+        .query_row(
+            "SELECT confidence, hierarchy_type FROM edges WHERE source_tag_id = ?1 AND target_tag_id = ?2",
+            [rust_id.get(), pl_id.get()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("failed to query edge metadata");
+
+    assert_eq!(confidence, 0.9, "original confidence should be preserved");
+    assert_eq!(
+        hierarchy_type, "generic",
+        "original hierarchy type should be preserved"
+    );
+}
+
+#[test]
+fn mixed_hierarchy_types_in_single_batch() {
+    // Test creating both generic and partitive edges in a single batch
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let attention_tag = service
+        .get_or_create_tag("attention")
+        .expect("failed to create attention");
+    let transformer_tag = service
+        .get_or_create_tag("transformer")
+        .expect("failed to create transformer");
+    let neural_network_tag = service
+        .get_or_create_tag("neural-network")
+        .expect("failed to create neural-network");
+
+    // Create batch with both hierarchy types
+    let edges = vec![
+        // Partitive: attention is part of transformer
+        (
+            attention_tag,
+            transformer_tag,
+            0.9,
+            "partitive",
+            Some("test-model"),
+        ),
+        // Generic: transformer is a type of neural-network
+        (
+            transformer_tag,
+            neural_network_tag,
+            0.95,
+            "generic",
+            Some("test-model"),
+        ),
+    ];
+
+    let created_count = service
+        .create_edges_batch(&edges)
+        .expect("failed to create mixed batch");
+
+    assert_eq!(created_count, 2, "should create 2 edges");
+
+    // Verify both hierarchy types stored correctly
+    let conn = service.database().connection();
+
+    let partitive_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE hierarchy_type = 'partitive'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("failed to count partitive edges");
+    assert_eq!(partitive_count, 1, "should have 1 partitive edge");
+
+    let generic_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE hierarchy_type = 'generic'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("failed to count generic edges");
+    assert_eq!(generic_count, 1, "should have 1 generic edge");
+
+    // Verify edge metadata
+    let partitive_edge: (String, String, f64) = conn
+        .query_row(
+            "SELECT st.name, tt.name, e.confidence FROM edges e
+             JOIN tags st ON e.source_tag_id = st.id
+             JOIN tags tt ON e.target_tag_id = tt.id
+             WHERE e.hierarchy_type = 'partitive'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("failed to query partitive edge");
+
+    assert_eq!(
+        partitive_edge,
+        ("attention".to_string(), "transformer".to_string(), 0.9),
+        "partitive edge should be attention -> transformer"
+    );
+}
+
+#[test]
+fn tag_name_resolution_before_edge_creation() {
+    // Test that tag names are properly resolved to IDs before edge creation
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create only one of the two tags initially
+    let existing_tag = service
+        .get_or_create_tag("existing-tag")
+        .expect("failed to create existing tag");
+
+    // Attempt to create edge with non-existent target tag (should fail validation)
+    let non_existent_id = TagId::new(99999);
+
+    let result = service.create_edge(
+        existing_tag,
+        non_existent_id,
+        0.9,
+        "generic",
+        Some("test-model"),
+    );
+
+    // Should fail because target tag doesn't exist
+    assert!(
+        result.is_err(),
+        "should fail when target tag doesn't exist"
+    );
+
+    // Now create both tags and verify edge creation works
+    let source_tag = service
+        .get_or_create_tag("python")
+        .expect("failed to create python");
+    let target_tag = service
+        .get_or_create_tag("programming-language")
+        .expect("failed to create programming-language");
+
+    let result = service.create_edge(
+        source_tag,
+        target_tag,
+        0.95,
+        "generic",
+        Some("test-model"),
+    );
+
+    assert!(
+        result.is_ok(),
+        "should succeed when both tags exist: {:?}",
+        result
+    );
+
+    // Verify edge was created
+    let conn = service.database().connection();
+    let edge_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_tag_id = ?1 AND target_tag_id = ?2",
+            [source_tag.get(), target_tag.get()],
+            |row| row.get(0),
+        )
+        .expect("failed to count edges");
+
+    assert_eq!(edge_count, 1, "should have created 1 edge");
+}
+
+#[test]
+fn create_edges_batch_rollback_on_failure() {
+    // Test that batch edge creation rolls back on failure (transaction atomicity)
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create valid tags
+    let tag1 = service.get_or_create_tag("tag1").expect("failed to create tag1");
+    let tag2 = service.get_or_create_tag("tag2").expect("failed to create tag2");
+
+    // Create batch with one invalid edge (non-existent tag)
+    let invalid_tag_id = TagId::new(99999);
+    let edges = vec![
+        (tag1, tag2, 0.9, "generic", Some("test-model")), // Valid
+        (tag1, invalid_tag_id, 0.85, "generic", Some("test-model")), // Invalid - should cause rollback
+    ];
+
+    let result = service.create_edges_batch(&edges);
+
+    // Should fail due to invalid tag
+    assert!(
+        result.is_err(),
+        "batch should fail when one edge is invalid"
+    );
+
+    // Verify NO edges were created (transaction rolled back)
+    let conn = service.database().connection();
+    let edge_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
+        .expect("failed to count edges");
+
+    assert_eq!(
+        edge_count, 0,
+        "no edges should exist after rollback (atomicity)"
     );
 }

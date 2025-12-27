@@ -32,7 +32,9 @@ fn schema_indexes_exist() {
 
     let indexes: Vec<String> = db
         .connection()
-        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name")
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name LIKE 'idx_%' ORDER BY name",
+        )
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()
@@ -1116,7 +1118,10 @@ fn edges_table_exists() {
         )
         .unwrap();
 
-    assert!(table_exists, "edges table should exist after Database::in_memory()");
+    assert!(
+        table_exists,
+        "edges table should exist after Database::in_memory()"
+    );
 }
 
 #[test]
@@ -1124,10 +1129,7 @@ fn edges_table_has_all_required_columns() {
     let db = Database::in_memory().unwrap();
 
     // Query table schema for edges table
-    let mut stmt = db
-        .connection()
-        .prepare("PRAGMA table_info(edges)")
-        .unwrap();
+    let mut stmt = db.connection().prepare("PRAGMA table_info(edges)").unwrap();
 
     let columns: Vec<(String, String, i32)> = stmt
         .query_map([], |row| {
@@ -1190,7 +1192,10 @@ fn edges_hierarchy_type_check_constraint() {
 
     // Insert valid tags for foreign key constraints
     db.connection()
-        .execute("INSERT INTO tags (id, name) VALUES (1, 'neural-networks')", [])
+        .execute(
+            "INSERT INTO tags (id, name) VALUES (1, 'neural-networks')",
+            [],
+        )
         .unwrap();
     db.connection()
         .execute("INSERT INTO tags (id, name) VALUES (2, 'transformers')", [])
@@ -1201,14 +1206,20 @@ fn edges_hierarchy_type_check_constraint() {
         "INSERT INTO edges (source_tag_id, target_tag_id, hierarchy_type) VALUES (1, 2, 'generic')",
         [],
     );
-    assert!(result_generic.is_ok(), "Should allow 'generic' hierarchy_type");
+    assert!(
+        result_generic.is_ok(),
+        "Should allow 'generic' hierarchy_type"
+    );
 
     // Test valid 'partitive' hierarchy_type
     let result_partitive = db.connection().execute(
         "INSERT INTO edges (source_tag_id, target_tag_id, hierarchy_type) VALUES (2, 1, 'partitive')",
         [],
     );
-    assert!(result_partitive.is_ok(), "Should allow 'partitive' hierarchy_type");
+    assert!(
+        result_partitive.is_ok(),
+        "Should allow 'partitive' hierarchy_type"
+    );
 
     // Test NULL hierarchy_type is allowed
     let result_null = db.connection().execute(
@@ -1272,7 +1283,10 @@ fn edges_foreign_key_cascade_delete_source_tag() {
         .connection()
         .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count_after, 0, "Edge should be CASCADE deleted when source tag is removed");
+    assert_eq!(
+        count_after, 0,
+        "Edge should be CASCADE deleted when source tag is removed"
+    );
 }
 
 #[test]
@@ -1312,7 +1326,10 @@ fn edges_foreign_key_cascade_delete_target_tag() {
         .connection()
         .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(count_after, 0, "Edge should be CASCADE deleted when target tag is removed");
+    assert_eq!(
+        count_after, 0,
+        "Edge should be CASCADE deleted when target tag is removed"
+    );
 }
 
 #[test]
@@ -1329,7 +1346,7 @@ fn edges_allows_duplicate_source_target_with_different_validity() {
 
     // Insert first edge with validity window 2023
     let timestamp_2023_start = 1672531200; // 2023-01-01 00:00:00 UTC
-    let timestamp_2023_end = 1704067199;   // 2023-12-31 23:59:59 UTC
+    let timestamp_2023_end = 1704067199; // 2023-12-31 23:59:59 UTC
     db.connection()
         .execute(
             "INSERT INTO edges (source_tag_id, target_tag_id, valid_from, valid_until) VALUES (1, 2, ?1, ?2)",
@@ -1339,7 +1356,7 @@ fn edges_allows_duplicate_source_target_with_different_validity() {
 
     // Insert second edge with validity window 2024 (same source/target, different validity)
     let timestamp_2024_start = 1704067200; // 2024-01-01 00:00:00 UTC
-    let timestamp_2024_end = 1735689599;   // 2024-12-31 23:59:59 UTC
+    let timestamp_2024_end = 1735689599; // 2024-12-31 23:59:59 UTC
     db.connection()
         .execute(
             "INSERT INTO edges (source_tag_id, target_tag_id, valid_from, valid_until) VALUES (1, 2, ?1, ?2)",
@@ -1350,9 +1367,16 @@ fn edges_allows_duplicate_source_target_with_different_validity() {
     // Verify both edges exist
     let count: i64 = db
         .connection()
-        .query_row("SELECT COUNT(*) FROM edges WHERE source_tag_id = 1 AND target_tag_id = 2", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_tag_id = 1 AND target_tag_id = 2",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert_eq!(count, 2, "Should allow duplicate source/target pairs with different validity windows");
+    assert_eq!(
+        count, 2,
+        "Should allow duplicate source/target pairs with different validity windows"
+    );
 
     // Verify we can query each edge by its validity window
     let edge_2023_id: i64 = db
@@ -1373,7 +1397,10 @@ fn edges_allows_duplicate_source_target_with_different_validity() {
         )
         .unwrap();
 
-    assert_ne!(edge_2023_id, edge_2024_id, "Each edge should have a unique ID");
+    assert_ne!(
+        edge_2023_id, edge_2024_id,
+        "Each edge should have a unique ID"
+    );
 }
 
 // ========== Edges Table Index Tests ==========
@@ -1551,10 +1578,16 @@ fn edges_insert_with_all_columns_populated() {
 
     // Insert tags
     db.connection()
-        .execute("INSERT INTO tags (id, name) VALUES (1, 'neural-networks')", [])
+        .execute(
+            "INSERT INTO tags (id, name) VALUES (1, 'neural-networks')",
+            [],
+        )
         .unwrap();
     db.connection()
-        .execute("INSERT INTO tags (id, name) VALUES (2, 'deep-learning')", [])
+        .execute(
+            "INSERT INTO tags (id, name) VALUES (2, 'deep-learning')",
+            [],
+        )
         .unwrap();
 
     // Insert edge with all columns populated
@@ -1571,27 +1604,46 @@ fn edges_insert_with_all_columns_populated() {
                 created_at, updated_at
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             rusqlite::params![
-                1,                           // source_tag_id
-                2,                           // target_tag_id
-                0.92,                        // confidence
-                "generic",                   // hierarchy_type
-                timestamp_valid_from,        // valid_from
-                timestamp_valid_until,       // valid_until
-                "llm",                       // source
-                "deepseek-r1:8b",           // model_version
-                1,                           // verified
-                timestamp_created,           // created_at
-                timestamp_updated,           // updated_at
+                1,                     // source_tag_id
+                2,                     // target_tag_id
+                0.92,                  // confidence
+                "generic",             // hierarchy_type
+                timestamp_valid_from,  // valid_from
+                timestamp_valid_until, // valid_until
+                "llm",                 // source
+                "deepseek-r1:8b",      // model_version
+                1,                     // verified
+                timestamp_created,     // created_at
+                timestamp_updated,     // updated_at
             ],
         )
         .unwrap();
 
     // Verify all columns are stored correctly
     let (
-        source, target, confidence, hierarchy_type, valid_from, valid_until,
-        source_field, model_version, verified, created_at, updated_at
+        source,
+        target,
+        confidence,
+        hierarchy_type,
+        valid_from,
+        valid_until,
+        source_field,
+        model_version,
+        verified,
+        created_at,
+        updated_at,
     ): (
-        i64, i64, f64, String, i64, i64, String, String, i32, i64, i64
+        i64,
+        i64,
+        f64,
+        String,
+        i64,
+        i64,
+        String,
+        String,
+        i32,
+        i64,
+        i64,
     ) = db
         .connection()
         .query_row(
@@ -1602,9 +1654,17 @@ fn edges_insert_with_all_columns_populated() {
             [],
             |row| {
                 Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                    row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
-                    row.get(8)?, row.get(9)?, row.get(10)?
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
                 ))
             },
         )
@@ -1645,11 +1705,25 @@ fn edges_insert_with_minimal_columns_uses_defaults() {
 
     // Verify defaults are applied
     let (
-        confidence, hierarchy_type, valid_from, valid_until,
-        source, model_version, verified, created_at, updated_at
+        confidence,
+        hierarchy_type,
+        valid_from,
+        valid_until,
+        source,
+        model_version,
+        verified,
+        created_at,
+        updated_at,
     ): (
-        Option<f64>, Option<String>, Option<i64>, Option<i64>,
-        String, Option<String>, i32, Option<i64>, Option<i64>
+        Option<f64>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+        String,
+        Option<String>,
+        i32,
+        Option<i64>,
+        Option<i64>,
     ) = db
         .connection()
         .query_row(
@@ -1659,16 +1733,25 @@ fn edges_insert_with_minimal_columns_uses_defaults() {
             [],
             |row| {
                 Ok((
-                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
-                    row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?,
-                    row.get(8)?
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
                 ))
             },
         )
         .unwrap();
 
     assert_eq!(confidence, None, "confidence should default to NULL");
-    assert_eq!(hierarchy_type, None, "hierarchy_type should default to NULL");
+    assert_eq!(
+        hierarchy_type, None,
+        "hierarchy_type should default to NULL"
+    );
     assert_eq!(valid_from, None, "valid_from should default to NULL");
     assert_eq!(valid_until, None, "valid_until should default to NULL");
     assert_eq!(source, "user", "source should default to 'user'");
@@ -1790,19 +1873,25 @@ fn edges_temporal_validity_filtering() {
 
     // Insert tags
     db.connection()
-        .execute("INSERT INTO tags (id, name) VALUES (1, 'machine-learning')", [])
+        .execute(
+            "INSERT INTO tags (id, name) VALUES (1, 'machine-learning')",
+            [],
+        )
         .unwrap();
     db.connection()
         .execute("INSERT INTO tags (id, name) VALUES (2, 'ai')", [])
         .unwrap();
     db.connection()
-        .execute("INSERT INTO tags (id, name) VALUES (3, 'deep-learning')", [])
+        .execute(
+            "INSERT INTO tags (id, name) VALUES (3, 'deep-learning')",
+            [],
+        )
         .unwrap();
 
     // Insert edges with different temporal validity windows
     // Edge 1: Valid in 2023 only
     let ts_2023_start = 1672531200; // 2023-01-01 00:00:00 UTC
-    let ts_2023_end = 1704067199;   // 2023-12-31 23:59:59 UTC
+    let ts_2023_end = 1704067199; // 2023-12-31 23:59:59 UTC
     db.connection()
         .execute(
             "INSERT INTO edges (source_tag_id, target_tag_id, valid_from, valid_until, hierarchy_type)
@@ -1813,7 +1902,7 @@ fn edges_temporal_validity_filtering() {
 
     // Edge 2: Valid in 2024 only
     let ts_2024_start = 1704067200; // 2024-01-01 00:00:00 UTC
-    let ts_2024_end = 1735689599;   // 2024-12-31 23:59:59 UTC
+    let ts_2024_end = 1735689599; // 2024-12-31 23:59:59 UTC
     db.connection()
         .execute(
             "INSERT INTO edges (source_tag_id, target_tag_id, valid_from, valid_until, hierarchy_type)
@@ -1962,7 +2051,10 @@ fn edges_schema_reopen_is_idempotent() {
 
     // Third open: Reopen again - should be completely idempotent
     let db3 = Database::open(&db_path);
-    assert!(db3.is_ok(), "Schema initialization should be idempotent on multiple reopens");
+    assert!(
+        db3.is_ok(),
+        "Schema initialization should be idempotent on multiple reopens"
+    );
 
     // Verify all indexes exist after multiple reopens
     let indexes: Vec<String> = db3
@@ -1997,11 +2089,26 @@ fn edges_schema_integration_with_existing_tables() {
         .collect();
 
     // Check all expected tables exist
-    assert!(tables.contains(&"notes".to_string()), "notes table should exist");
-    assert!(tables.contains(&"tags".to_string()), "tags table should exist");
-    assert!(tables.contains(&"note_tags".to_string()), "note_tags table should exist");
-    assert!(tables.contains(&"tag_aliases".to_string()), "tag_aliases table should exist");
-    assert!(tables.contains(&"edges".to_string()), "edges table should exist");
+    assert!(
+        tables.contains(&"notes".to_string()),
+        "notes table should exist"
+    );
+    assert!(
+        tables.contains(&"tags".to_string()),
+        "tags table should exist"
+    );
+    assert!(
+        tables.contains(&"note_tags".to_string()),
+        "note_tags table should exist"
+    );
+    assert!(
+        tables.contains(&"tag_aliases".to_string()),
+        "tag_aliases table should exist"
+    );
+    assert!(
+        tables.contains(&"edges".to_string()),
+        "edges table should exist"
+    );
 
     // Test foreign key from edges to tags works correctly
     db.connection()
@@ -2052,5 +2159,8 @@ fn edges_schema_integration_with_existing_tables() {
         .query_row("SELECT COUNT(*) FROM note_tags", [], |row| row.get(0))
         .unwrap();
 
-    assert_eq!(note_tag_count, 1, "note_tags table should still function correctly");
+    assert_eq!(
+        note_tag_count, 1,
+        "note_tags table should still function correctly"
+    );
 }

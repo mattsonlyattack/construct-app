@@ -64,9 +64,18 @@ fn search_with_file_based_sqlite() -> Result<()> {
         let db = Database::open(&db_path)?;
         let service = NoteService::new(db);
 
-        service.create_note("Rust is a systems programming language", Some(&["rust", "programming"]))?;
-        service.create_note("Python is great for data science", Some(&["python", "data-science"]))?;
-        service.create_note("Rust and Python can work together via PyO3", Some(&["rust", "python", "interop"]))?;
+        service.create_note(
+            "Rust is a systems programming language",
+            Some(&["rust", "programming"]),
+        )?;
+        service.create_note(
+            "Python is great for data science",
+            Some(&["python", "data-science"]),
+        )?;
+        service.create_note(
+            "Rust and Python can work together via PyO3",
+            Some(&["rust", "python", "interop"]),
+        )?;
     }
 
     // Reopen database and search (verifies FTS persists correctly)
@@ -161,7 +170,11 @@ fn search_across_all_indexed_fields() -> Result<()> {
     // Search for "quantum" - should find all 3 via different indexed fields
     let results = service.search_notes("quantum", None)?;
 
-    assert_eq!(results.len(), 3, "Should find all 3 notes via different fields");
+    assert_eq!(
+        results.len(),
+        3,
+        "Should find all 3 notes via different fields"
+    );
 
     println!("Search results for 'quantum':");
     for result in &results {
@@ -169,7 +182,10 @@ fn search_across_all_indexed_fields() -> Result<()> {
             "  - [score: {:.4}] content='{}', enhanced={:?}",
             result.relevance_score,
             result.note.content(),
-            result.note.content_enhanced().map(|s| &s[..s.len().min(50)])
+            result
+                .note
+                .content_enhanced()
+                .map(|s| &s[..s.len().min(50)])
         );
     }
 
@@ -256,15 +272,16 @@ fn search_enhanced_content_with_real_ollama() {
         .expect("Failed to create note");
 
     // Enhance it with real Ollama
-    let enhancer = NoteEnhancerBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    let enhancer = NoteEnhancerBuilder::new().client(Arc::new(client)).build();
 
     let enhancement = match enhancer.enhance_content(&model, note.content()) {
         Ok(e) => e,
         Err(e) => {
             // Larger models may timeout - skip test gracefully
-            println!("Enhancement failed (possibly timeout with larger model): {}", e);
+            println!(
+                "Enhancement failed (possibly timeout with larger model): {}",
+                e
+            );
             println!("Skipping remainder of test - this is expected with slow models");
             return;
         }
@@ -288,17 +305,12 @@ fn search_enhanced_content_with_real_ollama() {
 
     // Search using a word that might appear in enhanced content but not original
     // Common expansions: "groceries" -> "grocery store", "shopping list", etc.
-    let results = service
-        .search_notes("buy", None)
-        .expect("Search failed");
+    let results = service.search_notes("buy", None).expect("Search failed");
 
     assert!(!results.is_empty(), "Should find the note");
     assert_eq!(results[0].note.id(), note.id());
 
-    println!(
-        "Search result score: {:.4}",
-        results[0].relevance_score
-    );
+    println!("Search result score: {:.4}", results[0].relevance_score);
 }
 
 /// End-to-end test: create notes, enhance, search, verify ranking.
@@ -335,9 +347,7 @@ fn end_to_end_search_workflow_with_ollama() {
     let db = Database::open(&db_path).expect("Failed to open database");
     let service = NoteService::new(db);
 
-    let enhancer = NoteEnhancerBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    let enhancer = NoteEnhancerBuilder::new().client(Arc::new(client)).build();
 
     // Create diverse notes
     let notes_data = vec![
@@ -381,11 +391,7 @@ fn end_to_end_search_workflow_with_ollama() {
 
     for query in &["rust", "programming", "machine", "database"] {
         let results = service.search_notes(query, None).expect("Search failed");
-        println!(
-            "\nQuery '{}': {} results",
-            query,
-            results.len()
-        );
+        println!("\nQuery '{}': {} results", query, results.len());
         for result in &results {
             println!(
                 "  [{:.4}] {}",
