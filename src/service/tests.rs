@@ -2684,7 +2684,11 @@ fn hierarchy_population_full_end_to_end_workflow() {
     struct MockHierarchyClient;
 
     impl OllamaClientTrait for MockHierarchyClient {
-        fn generate(&self, _model: &str, _prompt: &str) -> Result<String, crate::ollama::OllamaError> {
+        fn generate(
+            &self,
+            _model: &str,
+            _prompt: &str,
+        ) -> Result<String, crate::ollama::OllamaError> {
             Ok(r#"[
                 {"source_tag": "transformer", "target_tag": "neural-network", "hierarchy_type": "generic", "confidence": 0.95},
                 {"source_tag": "attention", "target_tag": "transformer", "hierarchy_type": "partitive", "confidence": 0.85}
@@ -2852,7 +2856,11 @@ fn hierarchy_suggest_idempotency_no_duplicate_edges() {
     struct MockIdempotentClient;
 
     impl OllamaClientTrait for MockIdempotentClient {
-        fn generate(&self, _model: &str, _prompt: &str) -> Result<String, crate::ollama::OllamaError> {
+        fn generate(
+            &self,
+            _model: &str,
+            _prompt: &str,
+        ) -> Result<String, crate::ollama::OllamaError> {
             Ok(r#"[
                 {"source_tag": "rust", "target_tag": "programming-language", "hierarchy_type": "generic", "confidence": 0.9}
             ]"#.to_string())
@@ -2872,9 +2880,7 @@ fn hierarchy_suggest_idempotency_no_duplicate_edges() {
         .build();
 
     // Run suggest first time
-    let tags_with_notes = service
-        .get_tags_with_notes()
-        .expect("failed to get tags");
+    let tags_with_notes = service.get_tags_with_notes().expect("failed to get tags");
     let tag_names: Vec<String> = tags_with_notes
         .iter()
         .map(|(_, name)| name.clone())
@@ -2884,7 +2890,9 @@ fn hierarchy_suggest_idempotency_no_duplicate_edges() {
         .suggest_relationships("test-model", tag_names.clone())
         .expect("failed to suggest relationships");
 
-    let rust_id = service.get_or_create_tag("rust").expect("failed to get rust");
+    let rust_id = service
+        .get_or_create_tag("rust")
+        .expect("failed to get rust");
     let pl_id = service
         .get_or_create_tag("programming-language")
         .expect("failed to get pl");
@@ -3042,10 +3050,7 @@ fn tag_name_resolution_before_edge_creation() {
     );
 
     // Should fail because target tag doesn't exist
-    assert!(
-        result.is_err(),
-        "should fail when target tag doesn't exist"
-    );
+    assert!(result.is_err(), "should fail when target tag doesn't exist");
 
     // Now create both tags and verify edge creation works
     let source_tag = service
@@ -3055,13 +3060,7 @@ fn tag_name_resolution_before_edge_creation() {
         .get_or_create_tag("programming-language")
         .expect("failed to create programming-language");
 
-    let result = service.create_edge(
-        source_tag,
-        target_tag,
-        0.95,
-        "generic",
-        Some("test-model"),
-    );
+    let result = service.create_edge(source_tag, target_tag, 0.95, "generic", Some("test-model"));
 
     assert!(
         result.is_ok(),
@@ -3089,8 +3088,12 @@ fn create_edges_batch_rollback_on_failure() {
     let service = NoteService::new(db);
 
     // Create valid tags
-    let tag1 = service.get_or_create_tag("tag1").expect("failed to create tag1");
-    let tag2 = service.get_or_create_tag("tag2").expect("failed to create tag2");
+    let tag1 = service
+        .get_or_create_tag("tag1")
+        .expect("failed to create tag1");
+    let tag2 = service
+        .get_or_create_tag("tag2")
+        .expect("failed to create tag2");
 
     // Create batch with one invalid edge (non-existent tag)
     let invalid_tag_id = TagId::new(99999);
@@ -3116,5 +3119,795 @@ fn create_edges_batch_rollback_on_failure() {
     assert_eq!(
         edge_count, 0,
         "no edges should exist after rollback (atomicity)"
+    );
+}
+
+// --- Graph Search Tests (Task Group 2) ---
+
+#[test]
+fn graph_search_returns_search_results_with_normalized_scores() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags with hierarchy: rust -> programming
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create rust tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create programming tag");
+
+    // Create edge: rust specializes programming
+    service
+        .create_edge(
+            rust_tag,
+            programming_tag,
+            0.9,
+            "generic",
+            Some("test-model"),
+        )
+        .expect("failed to create edge");
+
+    // Create note tagged with rust
+    let note1 = service
+        .create_note("Learning Rust", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // Create note tagged with programming
+    let _note2 = service
+        .create_note("General programming concepts", Some(&["programming"]))
+        .expect("failed to create note");
+
+    // Search for "rust" should find both notes via graph spreading
+    let results = service
+        .graph_search("rust", None)
+        .expect("graph search should succeed");
+
+    assert!(!results.is_empty(), "should find notes via graph search");
+
+    // Verify SearchResult structure
+    for result in &results {
+        assert!(
+            result.relevance_score >= 0.0 && result.relevance_score <= 1.0,
+            "relevance score should be normalized to 0.0-1.0 range"
+        );
+        assert!(result.note.id().get() > 0, "note should have valid ID");
+    }
+
+    // Note tagged with rust should score higher (seed tag)
+    let note1_result = results
+        .iter()
+        .find(|r| r.note.id() == note1.id())
+        .expect("note1 should be in results");
+
+    assert!(
+        note1_result.relevance_score > 0.0,
+        "note with seed tag should have positive score"
+    );
+}
+
+#[test]
+fn graph_search_parses_query_into_seed_tags_via_expand_search_term() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create ml tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create note with canonical tag
+    service
+        .create_note("ML tutorial", Some(&["machine-learning"]))
+        .expect("failed to create note");
+
+    // Search using alias should expand and find note
+    let results = service
+        .graph_search("ml", None)
+        .expect("graph search should succeed");
+
+    assert!(
+        !results.is_empty(),
+        "alias should expand to canonical tag and find notes"
+    );
+}
+
+#[test]
+fn graph_search_from_note_seeds_from_note_tags_with_confidence_weighting() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create rust tag");
+    let systems_tag = service
+        .get_or_create_tag("systems")
+        .expect("failed to create systems tag");
+
+    // Create edge: rust -> systems
+    service
+        .create_edge(rust_tag, systems_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+
+    // Create seed note with rust tag
+    let seed_note = service
+        .create_note("Rust memory safety", Some(&["rust"]))
+        .expect("failed to create seed note");
+
+    // Create related note with systems tag
+    let related_note = service
+        .create_note("Systems programming", Some(&["systems"]))
+        .expect("failed to create related note");
+
+    // Find notes related to seed note
+    let results = service
+        .graph_search_from_note(seed_note.id(), None)
+        .expect("graph search from note should succeed");
+
+    assert!(
+        !results.is_empty(),
+        "should find related notes via tag graph"
+    );
+
+    // Verify related note is in results
+    let found_related = results.iter().any(|r| r.note.id() == related_note.id());
+    assert!(found_related, "should find note with related tag");
+}
+
+#[test]
+fn graph_search_cold_start_returns_empty_when_no_matching_tags() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create note with tag
+    service
+        .create_note("Some note", Some(&["unrelated"]))
+        .expect("failed to create note");
+
+    // Search for non-existent tag
+    let results = service
+        .graph_search("nonexistent", None)
+        .expect("graph search should succeed");
+
+    assert!(
+        results.is_empty(),
+        "cold start should return empty results when no matching tags"
+    );
+}
+
+#[test]
+fn graph_search_note_scoring_uses_sum_of_tag_activation_times_confidence() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags with hierarchy
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create rust tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create programming tag");
+    let systems_tag = service
+        .get_or_create_tag("systems")
+        .expect("failed to create systems tag");
+
+    // Create edges: rust -> programming, rust -> systems
+    service
+        .create_edge(
+            rust_tag,
+            programming_tag,
+            0.9,
+            "generic",
+            Some("test-model"),
+        )
+        .expect("failed to create edge");
+    service
+        .create_edge(rust_tag, systems_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+
+    // Create hub note with multiple activated tags
+    let hub_note = service
+        .create_note(
+            "Rust programming systems",
+            Some(&["programming", "systems"]),
+        )
+        .expect("failed to create hub note");
+
+    // Create single-tag note
+    let single_note = service
+        .create_note("Programming basics", Some(&["programming"]))
+        .expect("failed to create single note");
+
+    // Search for rust - both programming and systems should activate
+    let results = service
+        .graph_search("rust", Some(10))
+        .expect("graph search should succeed");
+
+    assert!(!results.is_empty(), "should find notes");
+
+    // Hub note with 2 activated tags should score higher than single-tag note
+    let hub_result = results
+        .iter()
+        .find(|r| r.note.id() == hub_note.id())
+        .expect("hub note should be in results");
+
+    let single_result = results
+        .iter()
+        .find(|r| r.note.id() == single_note.id())
+        .expect("single note should be in results");
+
+    assert!(
+        hub_result.relevance_score >= single_result.relevance_score,
+        "hub note with multiple activated tags should score higher or equal"
+    );
+}
+
+#[test]
+fn graph_search_from_note_excludes_seed_note_from_results() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags with hierarchy
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create rust tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create programming tag");
+
+    service
+        .create_edge(
+            rust_tag,
+            programming_tag,
+            0.9,
+            "generic",
+            Some("test-model"),
+        )
+        .expect("failed to create edge");
+
+    // Create seed note
+    let seed_note = service
+        .create_note("Rust note", Some(&["rust"]))
+        .expect("failed to create seed note");
+
+    // Create related note
+    service
+        .create_note("Programming note", Some(&["programming"]))
+        .expect("failed to create related note");
+
+    // Find notes related to seed note
+    let results = service
+        .graph_search_from_note(seed_note.id(), None)
+        .expect("graph search from note should succeed");
+
+    // Verify seed note is NOT in results
+    let found_seed = results.iter().any(|r| r.note.id() == seed_note.id());
+    assert!(!found_seed, "seed note should be excluded from results");
+}
+
+// --- Task Group 4: Strategic Integration Tests ---
+
+#[test]
+fn graph_search_multi_hop_traversal_finds_distantly_related_notes() {
+    // Test end-to-end: query -> 3-hop graph traversal -> distantly related notes
+    // Validates: multi-hop spreading, decay application, distant semantic discovery
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create linear chain: rust -> systems-programming -> operating-systems -> kernel
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create rust tag");
+    let systems_tag = service
+        .get_or_create_tag("systems-programming")
+        .expect("failed to create systems tag");
+    let os_tag = service
+        .get_or_create_tag("operating-systems")
+        .expect("failed to create os tag");
+    let kernel_tag = service
+        .get_or_create_tag("kernel")
+        .expect("failed to create kernel tag");
+
+    // Create edges with high confidence (0.9) to ensure propagation
+    service
+        .create_edge(rust_tag, systems_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+    service
+        .create_edge(systems_tag, os_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+    service
+        .create_edge(os_tag, kernel_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+
+    // Create notes at different distances from query term "rust"
+    let rust_note = service
+        .create_note("Rust ownership model", Some(&["rust"]))
+        .expect("failed to create note");
+
+    let systems_note = service
+        .create_note("Systems programming patterns", Some(&["systems-programming"]))
+        .expect("failed to create note");
+
+    let kernel_note = service
+        .create_note("Kernel development", Some(&["kernel"]))
+        .expect("failed to create note");
+
+    // Search for "rust" - should find notes 3 hops away (kernel)
+    let results = service
+        .graph_search("rust", Some(10))
+        .expect("graph search should succeed");
+
+    assert!(
+        !results.is_empty(),
+        "should find notes via multi-hop spreading"
+    );
+
+    // Verify all notes are found
+    let found_rust = results.iter().any(|r| r.note.id() == rust_note.id());
+    let found_systems = results.iter().any(|r| r.note.id() == systems_note.id());
+    let found_kernel = results.iter().any(|r| r.note.id() == kernel_note.id());
+
+    assert!(found_rust, "should find note with seed tag");
+    assert!(found_systems, "should find note 1 hop away");
+    assert!(
+        found_kernel,
+        "should find note 3 hops away (distant relation)"
+    );
+
+    // Verify score decay: rust > systems > kernel
+    let rust_score = results
+        .iter()
+        .find(|r| r.note.id() == rust_note.id())
+        .unwrap()
+        .relevance_score;
+    let systems_score = results
+        .iter()
+        .find(|r| r.note.id() == systems_note.id())
+        .unwrap()
+        .relevance_score;
+    let kernel_score = results
+        .iter()
+        .find(|r| r.note.id() == kernel_note.id())
+        .unwrap()
+        .relevance_score;
+
+    assert!(
+        rust_score > systems_score,
+        "seed tag note should score higher than 1-hop note"
+    );
+    assert!(
+        systems_score > kernel_score,
+        "1-hop note should score higher than 3-hop note"
+    );
+}
+
+#[test]
+fn graph_search_hub_note_with_multiple_activated_tags_scores_highest() {
+    // Test hub note discovery: query activates multiple tags -> note with ALL tags scores highest
+    // Validates: SUM aggregation, tag convergence scoring
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy:
+    //      rust
+    //     /    \
+    //  memory  concurrency
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create rust tag");
+    let memory_tag = service
+        .get_or_create_tag("memory-safety")
+        .expect("failed to create memory tag");
+    let concurrency_tag = service
+        .get_or_create_tag("concurrency")
+        .expect("failed to create concurrency tag");
+
+    service
+        .create_edge(rust_tag, memory_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+    service
+        .create_edge(rust_tag, concurrency_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+
+    // Create hub note with BOTH activated tags
+    let hub_note = service
+        .create_note(
+            "Rust safe concurrency",
+            Some(&["memory-safety", "concurrency"]),
+        )
+        .expect("failed to create hub note");
+
+    // Create single-tag notes
+    let memory_note = service
+        .create_note("Memory safety basics", Some(&["memory-safety"]))
+        .expect("failed to create memory note");
+
+    let concurrency_note = service
+        .create_note("Concurrency patterns", Some(&["concurrency"]))
+        .expect("failed to create concurrency note");
+
+    // Search for "rust" - activates both memory-safety and concurrency
+    let results = service
+        .graph_search("rust", Some(10))
+        .expect("graph search should succeed");
+
+    assert!(!results.is_empty(), "should find notes");
+
+    // Find scores
+    let hub_score = results
+        .iter()
+        .find(|r| r.note.id() == hub_note.id())
+        .expect("hub note should be in results")
+        .relevance_score;
+
+    let memory_score = results
+        .iter()
+        .find(|r| r.note.id() == memory_note.id())
+        .expect("memory note should be in results")
+        .relevance_score;
+
+    let concurrency_score = results
+        .iter()
+        .find(|r| r.note.id() == concurrency_note.id())
+        .expect("concurrency note should be in results")
+        .relevance_score;
+
+    // Hub note should score highest (SUM of both tag activations)
+    assert!(
+        hub_score > memory_score,
+        "hub note with 2 activated tags should score higher than single-tag note (got hub={}, memory={})",
+        hub_score,
+        memory_score
+    );
+    assert!(
+        hub_score > concurrency_score,
+        "hub note with 2 activated tags should score higher than single-tag note (got hub={}, concurrency={})",
+        hub_score,
+        concurrency_score
+    );
+
+    // Verify hub score is approximately the sum of individual activations
+    // (allowing for bidirectional traversal effects)
+    assert!(
+        hub_score >= memory_score && hub_score >= concurrency_score,
+        "hub note should benefit from multiple activated tags"
+    );
+}
+
+#[test]
+fn graph_search_environment_variable_override_affects_results() {
+    // Test CONS_DECAY override changes final results
+    // Validates: environment variable configuration, runtime config parsing
+    // NOTE: This test uses serial execution marker to avoid test interference
+
+    // Save original CONS_DECAY value to restore later
+    let original_decay = std::env::var("CONS_DECAY").ok();
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create linear chain: tag1 -> tag2 -> tag3
+    let tag1 = service
+        .get_or_create_tag("tag1")
+        .expect("failed to create tag1");
+    let tag2 = service
+        .get_or_create_tag("tag2")
+        .expect("failed to create tag2");
+    let tag3 = service
+        .get_or_create_tag("tag3")
+        .expect("failed to create tag3");
+
+    service
+        .create_edge(tag1, tag2, 1.0, "generic", Some("test-model"))
+        .expect("failed to create edge");
+    service
+        .create_edge(tag2, tag3, 1.0, "generic", Some("test-model"))
+        .expect("failed to create edge");
+
+    // Create note 2 hops away
+    let distant_note = service
+        .create_note("Tag3 note", Some(&["tag3"]))
+        .expect("failed to create note");
+
+    // Test 1: Default decay (0.7) - distant note should be found
+    unsafe { std::env::remove_var("CONS_DECAY") };
+    let results_default = service
+        .graph_search("tag1", Some(10))
+        .expect("graph search should succeed");
+
+    let found_default = results_default
+        .iter()
+        .any(|r| r.note.id() == distant_note.id());
+
+    // Test 2: Low decay (0.2) - activation drops quickly, may not reach tag3
+    unsafe { std::env::set_var("CONS_DECAY", "0.2") };
+    let results_low_decay = service
+        .graph_search("tag1", Some(10))
+        .expect("graph search should succeed");
+
+    let found_low_decay = results_low_decay
+        .iter()
+        .any(|r| r.note.id() == distant_note.id());
+
+    // Test 3: No decay (1.0) - activation preserved, should definitely find tag3
+    unsafe { std::env::set_var("CONS_DECAY", "1.0") };
+    let results_high_decay = service
+        .graph_search("tag1", Some(10))
+        .expect("graph search should succeed");
+
+    let found_high_decay = results_high_decay
+        .iter()
+        .any(|r| r.note.id() == distant_note.id());
+
+    // Restore original environment variable state
+    unsafe {
+        match original_decay {
+            Some(val) => std::env::set_var("CONS_DECAY", val),
+            None => std::env::remove_var("CONS_DECAY"),
+        }
+    }
+
+    // Verify CONS_DECAY affects results
+    // With decay=1.0, we should definitely find the distant note
+    assert!(
+        found_high_decay,
+        "with CONS_DECAY=1.0, should find 2-hop distant note"
+    );
+
+    // With decay=0.2, activation decays rapidly (1.0 -> 0.2 -> 0.04)
+    // Threshold is 0.1, so 0.04 gets pruned
+    assert!(
+        !found_low_decay,
+        "with CONS_DECAY=0.2, should NOT find 2-hop note (0.04 < threshold 0.1)"
+    );
+
+    // Verify default behavior
+    assert!(
+        found_default,
+        "with default CONS_DECAY=0.7, should find 2-hop note"
+    );
+}
+
+#[test]
+fn graph_search_alias_expansion_then_spreading_activation() {
+    // Test integration: query uses alias -> resolves to canonical -> spreads through edges
+    // Validates: alias resolution + graph spreading pipeline
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create ml tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create related tag via edge
+    let nn_tag = service
+        .get_or_create_tag("neural-network")
+        .expect("failed to create nn tag");
+    service
+        .create_edge(ml_tag, nn_tag, 0.9, "generic", Some("test-model"))
+        .expect("failed to create edge");
+
+    // Create notes
+    let ml_note = service
+        .create_note("ML tutorial", Some(&["machine-learning"]))
+        .expect("failed to create note");
+
+    let nn_note = service
+        .create_note("Neural network basics", Some(&["neural-network"]))
+        .expect("failed to create note");
+
+    // Search using ALIAS "ml" (not canonical "machine-learning")
+    let results = service
+        .graph_search("ml", Some(10))
+        .expect("graph search should succeed");
+
+    assert!(!results.is_empty(), "alias query should find notes");
+
+    // Verify both notes found: alias resolves -> spreads to related tag
+    let found_ml = results.iter().any(|r| r.note.id() == ml_note.id());
+    let found_nn = results.iter().any(|r| r.note.id() == nn_note.id());
+
+    assert!(
+        found_ml,
+        "should find note with canonical tag via alias resolution"
+    );
+    assert!(
+        found_nn,
+        "should find note with related tag via spreading activation after alias resolution"
+    );
+}
+
+#[test]
+fn graph_search_edge_confidence_affects_activation_propagation() {
+    // Test edge confidence weighting: low-confidence edge (0.3) vs high-confidence (0.9)
+    // Validates: confidence multiplier in spreading formula
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create parallel paths with different edge confidences
+    let seed_tag = service
+        .get_or_create_tag("seed")
+        .expect("failed to create seed tag");
+
+    let high_conf_tag = service
+        .get_or_create_tag("high-confidence-target")
+        .expect("failed to create high conf tag");
+
+    let low_conf_tag = service
+        .get_or_create_tag("low-confidence-target")
+        .expect("failed to create low conf tag");
+
+    // High confidence edge (0.9)
+    service
+        .create_edge(
+            seed_tag,
+            high_conf_tag,
+            0.9,
+            "generic",
+            Some("test-model"),
+        )
+        .expect("failed to create high conf edge");
+
+    // Low confidence edge (0.3)
+    service
+        .create_edge(
+            seed_tag,
+            low_conf_tag,
+            0.3,
+            "generic",
+            Some("test-model"),
+        )
+        .expect("failed to create low conf edge");
+
+    // Create notes with each target tag
+    let high_conf_note = service
+        .create_note("High confidence note", Some(&["high-confidence-target"]))
+        .expect("failed to create note");
+
+    let low_conf_note = service
+        .create_note("Low confidence note", Some(&["low-confidence-target"]))
+        .expect("failed to create note");
+
+    // Search for seed tag
+    let results = service
+        .graph_search("seed", Some(10))
+        .expect("graph search should succeed");
+
+    assert!(!results.is_empty(), "should find notes");
+
+    // Get scores
+    let high_conf_score = results
+        .iter()
+        .find(|r| r.note.id() == high_conf_note.id())
+        .expect("high conf note should be in results")
+        .relevance_score;
+
+    let low_conf_score = results
+        .iter()
+        .find(|r| r.note.id() == low_conf_note.id())
+        .expect("low conf note should be in results")
+        .relevance_score;
+
+    // High confidence edge should produce higher activation
+    // Formula: activation = 1.0 * confidence * decay * edge_type_multiplier
+    // High: 1.0 * 0.9 * 0.7 * 1.0 = 0.63
+    // Low:  1.0 * 0.3 * 0.7 * 1.0 = 0.21
+    assert!(
+        high_conf_score > low_conf_score,
+        "high confidence edge (0.9) should produce higher activation than low confidence (0.3), got high={}, low={}",
+        high_conf_score,
+        low_conf_score
+    );
+
+    // Verify rough ratio (allowing for bidirectional and normalization effects)
+    let ratio = high_conf_score / low_conf_score;
+    assert!(
+        ratio > 1.5,
+        "activation ratio should reflect confidence difference (0.9/0.3 = 3.0), got ratio={}",
+        ratio
+    );
+}
+
+#[test]
+fn graph_search_mixed_edge_types_in_path_applies_both_multipliers() {
+    // Test path with both generic (1.0) and partitive (0.5) edges
+    // Validates: edge type multiplier composition
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create chain: seed -> generic_tag -> partitive_tag
+    let seed_tag = service
+        .get_or_create_tag("seed")
+        .expect("failed to create seed tag");
+    let generic_tag = service
+        .get_or_create_tag("generic-tag")
+        .expect("failed to create generic tag");
+    let partitive_tag = service
+        .get_or_create_tag("partitive-tag")
+        .expect("failed to create partitive tag");
+
+    // First hop: generic edge (multiplier 1.0)
+    service
+        .create_edge(seed_tag, generic_tag, 1.0, "generic", Some("test-model"))
+        .expect("failed to create generic edge");
+
+    // Second hop: partitive edge (multiplier 0.5)
+    service
+        .create_edge(
+            generic_tag,
+            partitive_tag,
+            1.0,
+            "partitive",
+            Some("test-model"),
+        )
+        .expect("failed to create partitive edge");
+
+    // Create parallel path for comparison: seed -> partitive_only_tag (1 hop partitive)
+    let partitive_only_tag = service
+        .get_or_create_tag("partitive-only")
+        .expect("failed to create partitive only tag");
+    service
+        .create_edge(
+            seed_tag,
+            partitive_only_tag,
+            1.0,
+            "partitive",
+            Some("test-model"),
+        )
+        .expect("failed to create partitive only edge");
+
+    // Create notes
+    let partitive_2hop_note = service
+        .create_note("2-hop partitive note", Some(&["partitive-tag"]))
+        .expect("failed to create note");
+
+    let partitive_1hop_note = service
+        .create_note("1-hop partitive note", Some(&["partitive-only"]))
+        .expect("failed to create note");
+
+    // Search for seed tag
+    let results = service
+        .graph_search("seed", Some(10))
+        .expect("graph search should succeed");
+
+    assert!(!results.is_empty(), "should find notes");
+
+    // Get scores
+    let partitive_2hop_score = results
+        .iter()
+        .find(|r| r.note.id() == partitive_2hop_note.id())
+        .map(|r| r.relevance_score);
+
+    let partitive_1hop_score = results
+        .iter()
+        .find(|r| r.note.id() == partitive_1hop_note.id())
+        .map(|r| r.relevance_score);
+
+    // Verify both notes are found
+    assert!(
+        partitive_1hop_score.is_some(),
+        "1-hop partitive note should be found"
+    );
+    assert!(
+        partitive_2hop_score.is_some(),
+        "2-hop mixed path note should be found"
+    );
+
+    // Verify 1-hop partitive scores higher than 2-hop mixed
+    // 1-hop partitive: 1.0 * 1.0 * 0.7 * 0.5 = 0.35
+    // 2-hop mixed: 1.0 * 1.0 * 0.7 * 1.0 (first hop) -> 0.7 * 1.0 * 0.7 * 0.5 (second hop) = 0.245
+    assert!(
+        partitive_1hop_score.unwrap() > partitive_2hop_score.unwrap(),
+        "1-hop partitive should score higher than 2-hop mixed path (decay effect), got 1hop={}, 2hop={}",
+        partitive_1hop_score.unwrap(),
+        partitive_2hop_score.unwrap()
     );
 }

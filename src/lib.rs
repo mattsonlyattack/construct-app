@@ -5,6 +5,7 @@ pub mod hierarchy;
 pub mod models;
 pub mod ollama;
 pub mod service;
+pub mod spreading_activation;
 
 pub use autotagger::{AutoTagger, AutoTaggerBuilder, TagNormalizer};
 pub use db::Database;

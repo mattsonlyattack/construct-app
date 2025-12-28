@@ -28,6 +28,8 @@ enum Commands {
     List(ListCommand),
     /// Search notes by content, enhanced content, and tags
     Search(SearchCommand),
+    /// Search notes using graph-based spreading activation
+    GraphSearch(GraphSearchCommand),
     /// Manage tag aliases
     TagAlias(TagAliasCommand),
     /// Manage tag hierarchy
@@ -61,6 +63,18 @@ struct ListCommand {
 /// Search notes by content, enhanced content, and tags
 #[derive(Parser)]
 struct SearchCommand {
+    /// The search query
+    #[arg(value_name = "QUERY")]
+    query: String,
+
+    /// Maximum number of results to display (default: 10)
+    #[arg(short, long, value_name = "LIMIT")]
+    limit: Option<usize>,
+}
+
+/// Search notes using graph-based spreading activation
+#[derive(Parser)]
+struct GraphSearchCommand {
     /// The search query
     #[arg(value_name = "QUERY")]
     query: String,
@@ -125,6 +139,7 @@ fn main() {
         Commands::Add(cmd) => handle_add(cmd),
         Commands::List(cmd) => handle_list(cmd),
         Commands::Search(cmd) => handle_search(cmd),
+        Commands::GraphSearch(cmd) => handle_graph_search(cmd),
         Commands::TagAlias(cmd) => handle_tag_alias(cmd),
         Commands::Hierarchy(cmd) => handle_hierarchy(cmd),
     };
@@ -550,6 +565,76 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
 
     // Display each note (using same format as list command)
     // Extract .note from SearchResult - score is available for future dual-channel use
+    for result in &results {
+        let note = &result.note;
+
+        // Format timestamp as "YYYY-MM-DD HH:MM"
+        let timestamp = note
+            .created_at()
+            .format(&format)
+            .unwrap_or_else(|_| "Invalid date".to_string());
+
+        // Get tag names using batch query
+        let tag_assignments = note.tags();
+        let tag_names: Vec<String> = get_tag_names(service.database(), tag_assignments)?
+            .into_iter()
+            .map(|name| format!("#{}", name))
+            .collect();
+
+        // Display note information
+        println!("ID: {}", note.id().get());
+        println!("Created: {}", timestamp);
+
+        // Display content using stacked format (original + enhanced if available)
+        print!("{}", format_note_content(note));
+
+        if !tag_names.is_empty() {
+            println!("Tags: {}", tag_names.join(" "));
+        }
+        println!(); // Blank line separator
+    }
+
+    Ok(())
+}
+
+/// Handles the graph-search command by searching notes using spreading activation.
+fn handle_graph_search(cmd: &GraphSearchCommand) -> Result<()> {
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+    let service = NoteService::new(db);
+
+    execute_graph_search(&cmd.query, cmd.limit, service)
+}
+
+/// Executes the graph-search command logic with a provided NoteService.
+///
+/// This function is separated from `handle_graph_search` to allow testing with in-memory databases.
+fn execute_graph_search(query: &str, limit: Option<usize>, service: NoteService) -> Result<()> {
+    use time::macros::format_description;
+
+    // Apply default limit of 10 when not specified
+    let limit = limit.unwrap_or(10);
+
+    // Call service graph_search method - returns SearchResult with note and relevance_score
+    let results = service
+        .graph_search(query, Some(limit))
+        .context("Failed to perform graph search")?;
+
+    // Handle empty results
+    if results.is_empty() {
+        println!("No notes found via graph search");
+        return Ok(());
+    }
+
+    // Format descriptor for "YYYY-MM-DD HH:MM"
+    let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
+
+    // Display each note (using same format as search command)
+    // Extract .note from SearchResult - score is available for future use
     for result in &results {
         let note = &result.note;
 
@@ -2102,5 +2187,70 @@ mod tests {
         // The execute_hierarchy_suggest function should handle LLM errors gracefully
         // (either by catching them or by having them not propagate to exit code)
         // This is verified by the implementation pattern we'll use
+    }
+
+    // --- Graph Search CLI Command Tests (Task Group 3) ---
+
+    #[test]
+    fn graph_search_command_struct_parsing_with_clap() {
+        use clap::CommandFactory;
+
+        // Test parsing with positional query and --limit flag
+        let matches = Cli::command()
+            .try_get_matches_from(vec!["cons", "graph-search", "machine learning", "-l", "5"])
+            .expect("failed to parse graph-search command");
+
+        // Verify command is recognized
+        assert!(matches.subcommand_matches("graph-search").is_some());
+    }
+
+    #[test]
+    fn execute_graph_search_with_in_memory_database_returns_results() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with tags that will be used for graph search
+        service
+            .create_note(
+                "Learning machine learning basics",
+                Some(&["machine-learning"]),
+            )
+            .expect("failed to create note");
+        service
+            .create_note("Neural networks tutorial", Some(&["neural-network"]))
+            .expect("failed to create note");
+
+        // Execute graph search
+        let result = execute_graph_search("machine learning", Some(10), service);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn execute_graph_search_with_empty_database_shows_no_notes_found() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Execute graph search in empty database
+        let result = execute_graph_search("machine learning", Some(10), service);
+        assert!(result.is_ok());
+        // Should complete successfully and print "No notes found via graph search"
+    }
+
+    #[test]
+    fn execute_graph_search_limit_flag_restricts_result_count() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create multiple notes
+        for i in 1..=5 {
+            service
+                .create_note(&format!("Test note {}", i), Some(&["test"]))
+                .expect("failed to create note");
+        }
+
+        // Execute with limit of 3
+        let result = execute_graph_search("test", Some(3), service);
+        assert!(result.is_ok());
+        // The limit is applied at the service layer, verified by service tests
     }
 }

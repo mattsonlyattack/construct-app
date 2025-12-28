@@ -1494,6 +1494,300 @@ impl NoteService {
             }
         }
     }
+
+    /// Searches for notes using spreading activation through the tag hierarchy graph.
+    ///
+    /// Parses the query string into terms, expands each term using alias resolution,
+    /// and uses the resulting tags as seeds for spreading activation. Returns notes
+    /// scored by the sum of (tag_activation * note_tags.confidence) for each activated
+    /// tag on the note.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Parse query into whitespace-separated terms
+    /// 2. Expand each term using `expand_search_term()` to handle aliases
+    /// 3. Look up TagIds for all expanded terms
+    /// 4. Execute spreading activation with initial activation 1.0 for seed tags
+    /// 5. Score notes: `SUM(tag_activation * note_tags.confidence)` for each activated tag
+    /// 6. Normalize scores to 0.0-1.0 range using min-max normalization
+    /// 7. Sort by score descending and apply limit
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Search query string (terms separated by whitespace)
+    /// * `limit` - Optional maximum number of results to return
+    ///
+    /// # Returns
+    ///
+    /// Returns `Vec<SearchResult>` with notes and normalized relevance scores (0.0-1.0).
+    /// Returns empty vector if no tags match the query terms (cold-start case).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tags and notes
+    /// let rust_tag = service.get_or_create_tag("rust")?;
+    /// service.create_note("Learning Rust", Some(&["rust"]))?;
+    ///
+    /// // Search using graph spreading
+    /// let results = service.graph_search("rust", Some(10))?;
+    /// for result in &results {
+    ///     println!("Score: {:.2}, Note: {}", result.relevance_score, result.note.content());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn graph_search(&self, query: &str, limit: Option<usize>) -> Result<Vec<SearchResult>> {
+        use crate::spreading_activation::{SpreadingActivationConfig, spread_activation};
+        use std::collections::HashMap;
+
+        let conn = self.db.connection();
+
+        // Parse query into terms
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        if terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Expand each term and collect all tag names
+        let mut all_tag_names = std::collections::HashSet::new();
+        for term in terms {
+            let expansions = self.expand_search_term(term)?;
+            for expansion in expansions {
+                all_tag_names.insert(expansion);
+            }
+        }
+
+        // Look up TagIds for all expanded tag names
+        let mut seed_tags = HashMap::new();
+        for tag_name in &all_tag_names {
+            // Try direct tag lookup
+            let tag_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+                    [tag_name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+
+            if let Some(id) = tag_id {
+                seed_tags.insert(TagId::new(id), 1.0);
+            }
+        }
+
+        // Cold-start case: no matching tags found
+        if seed_tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Execute spreading activation
+        let config = SpreadingActivationConfig::from_env();
+        let activated_tags = spread_activation(conn, &seed_tags, &config)?;
+
+        // Score notes using: SUM(tag_activation * note_tags.confidence)
+        // Since we can't bind arrays, we'll execute multiple queries
+        let mut note_scores: HashMap<i64, f64> = HashMap::new();
+
+        for (tag_id, activation) in &activated_tags {
+            let mut stmt =
+                conn.prepare("SELECT note_id, confidence FROM note_tags WHERE tag_id = ?1")?;
+
+            let rows = stmt.query_map([tag_id.get()], |row| {
+                let note_id: i64 = row.get(0)?;
+                let confidence: f64 = row.get(1)?;
+                Ok((note_id, confidence))
+            })?;
+
+            for row_result in rows {
+                let (note_id, confidence) = row_result?;
+                let score_contribution = activation * confidence;
+                *note_scores.entry(note_id).or_insert(0.0) += score_contribution;
+            }
+        }
+
+        // Sort by score descending
+        let mut scored_notes: Vec<(i64, f64)> = note_scores.into_iter().collect();
+        scored_notes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Apply limit
+        if let Some(lim) = limit {
+            scored_notes.truncate(lim);
+        }
+
+        // Load notes and normalize scores
+        let mut results = Vec::new();
+
+        // Find max score for min-max normalization
+        let max_score = scored_notes
+            .iter()
+            .map(|(_, score)| *score)
+            .fold(0.0_f64, f64::max);
+
+        for (note_id, raw_score) in scored_notes {
+            if let Some(note) = self.get_note(NoteId::new(note_id))? {
+                // Normalize score to 0.0-1.0 range using min-max normalization
+                // Higher raw scores = higher normalized scores
+                let relevance_score = if max_score > 0.0 {
+                    raw_score / max_score
+                } else {
+                    0.0
+                };
+                results.push(SearchResult {
+                    note,
+                    relevance_score,
+                });
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Searches for notes related to a given note using spreading activation.
+    ///
+    /// Uses the tags of the seed note as the starting points for spreading activation,
+    /// with initial activation values weighted by the tag confidence from note_tags.
+    /// The seed note itself is excluded from results.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Query note_tags to get all tags associated with the seed note
+    /// 2. Use note_tags.confidence as initial activation weight for each tag
+    /// 3. Execute spreading activation with confidence-weighted seeds
+    /// 4. Score notes: `SUM(tag_activation * note_tags.confidence)` for each activated tag
+    /// 5. Exclude the seed note from results
+    /// 6. Normalize scores to 0.0-1.0 range
+    /// 7. Sort by score descending and apply limit
+    ///
+    /// # Arguments
+    ///
+    /// * `note_id` - The ID of the note to find related notes for
+    /// * `limit` - Optional maximum number of results to return
+    ///
+    /// # Returns
+    ///
+    /// Returns `Vec<SearchResult>` with related notes and normalized relevance scores.
+    /// The seed note is excluded from results.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create notes
+    /// let note1 = service.create_note("Rust note", Some(&["rust"]))?;
+    /// let note2 = service.create_note("Programming note", Some(&["programming"]))?;
+    ///
+    /// // Find notes related to note1
+    /// let results = service.graph_search_from_note(note1.id(), Some(10))?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn graph_search_from_note(
+        &self,
+        note_id: NoteId,
+        limit: Option<usize>,
+    ) -> Result<Vec<SearchResult>> {
+        use crate::spreading_activation::{SpreadingActivationConfig, spread_activation};
+        use std::collections::HashMap;
+
+        let conn = self.db.connection();
+
+        // Get all tags associated with the seed note
+        let mut stmt =
+            conn.prepare("SELECT tag_id, confidence FROM note_tags WHERE note_id = ?1")?;
+
+        let rows = stmt.query_map([note_id.get()], |row| {
+            let tag_id: i64 = row.get(0)?;
+            let confidence: f64 = row.get(1)?;
+            Ok((TagId::new(tag_id), confidence))
+        })?;
+
+        let mut seed_tags = HashMap::new();
+        for row_result in rows {
+            let (tag_id, confidence) = row_result?;
+            // Use note_tags.confidence as initial activation weight
+            seed_tags.insert(tag_id, confidence);
+        }
+
+        // Cold-start case: seed note has no tags
+        if seed_tags.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Execute spreading activation
+        let config = SpreadingActivationConfig::from_env();
+        let activated_tags = spread_activation(conn, &seed_tags, &config)?;
+
+        // Score notes using: SUM(tag_activation * note_tags.confidence)
+        let mut note_scores: HashMap<i64, f64> = HashMap::new();
+
+        for (tag_id, activation) in &activated_tags {
+            let mut stmt =
+                conn.prepare("SELECT note_id, confidence FROM note_tags WHERE tag_id = ?1")?;
+
+            let rows = stmt.query_map([tag_id.get()], |row| {
+                let note_id_val: i64 = row.get(0)?;
+                let confidence: f64 = row.get(1)?;
+                Ok((note_id_val, confidence))
+            })?;
+
+            for row_result in rows {
+                let (note_id_val, confidence) = row_result?;
+                // Exclude the seed note from results
+                if note_id_val == note_id.get() {
+                    continue;
+                }
+                let score_contribution = activation * confidence;
+                *note_scores.entry(note_id_val).or_insert(0.0) += score_contribution;
+            }
+        }
+
+        // Sort by score descending
+        let mut scored_notes: Vec<(i64, f64)> = note_scores.into_iter().collect();
+        scored_notes.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Apply limit
+        if let Some(lim) = limit {
+            scored_notes.truncate(lim);
+        }
+
+        // Load notes and normalize scores
+        let mut results = Vec::new();
+
+        // Find max score for min-max normalization
+        let max_score = scored_notes
+            .iter()
+            .map(|(_, score)| *score)
+            .fold(0.0_f64, f64::max);
+
+        for (note_id_val, raw_score) in scored_notes {
+            if let Some(note) = self.get_note(NoteId::new(note_id_val))? {
+                // Normalize score to 0.0-1.0 range using min-max normalization
+                // Higher raw scores = higher normalized scores
+                let relevance_score = if max_score > 0.0 {
+                    raw_score / max_score
+                } else {
+                    0.0
+                };
+                results.push(SearchResult {
+                    note,
+                    relevance_score,
+                });
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 /// Sort order for listing notes.
