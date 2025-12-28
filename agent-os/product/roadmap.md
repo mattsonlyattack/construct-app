@@ -40,7 +40,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 19. [x] Spreading activation retrieval -- Implement recursive CTE spreading activation from query tags through edges with decay=0.7, threshold=0.1, max_hops=3; accumulate scores to surface hub notes connecting multiple query concepts; cognitive psychology foundation per KNOWLEDGE.md `M`
 
-20. [ ] Dual-channel search -- Combine FTS5 results with spreading activation using intersection boost (1.5x multiplier for notes found by both channels); graceful degradation to FTS-only when graph density below threshold (cold-start handling) `M`
+20. [x] Dual-channel search -- Combine FTS5 results with spreading activation using intersection boost (1.5x multiplier for notes found by both channels); graceful degradation to FTS-only when graph density below threshold (cold-start handling) `M`
 
 21. [ ] Query expansion -- Before FTS, expand query using aliases (always), broader concepts (for short queries <3 terms); aggressive noise control to prevent over-expansion; configurable expansion depth `S`
 
