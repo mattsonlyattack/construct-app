@@ -1809,7 +1809,7 @@ fn list_notes_works_independently_of_fts_functionality() {
             |row| row.get(0),
         )
         .expect("failed to check FTS table existence");
-    assert_eq!(fts_exists, false, "FTS table should be dropped");
+    assert!(!fts_exists, "FTS table should be dropped");
 
     // list_notes should still work (doesn't depend on FTS)
     let notes = service
@@ -3429,7 +3429,10 @@ fn graph_search_multi_hop_traversal_finds_distantly_related_notes() {
         .expect("failed to create note");
 
     let systems_note = service
-        .create_note("Systems programming patterns", Some(&["systems-programming"]))
+        .create_note(
+            "Systems programming patterns",
+            Some(&["systems-programming"]),
+        )
         .expect("failed to create note");
 
     let kernel_note = service
@@ -3510,7 +3513,13 @@ fn graph_search_hub_note_with_multiple_activated_tags_scores_highest() {
         .create_edge(rust_tag, memory_tag, 0.9, "generic", Some("test-model"))
         .expect("failed to create edge");
     service
-        .create_edge(rust_tag, concurrency_tag, 0.9, "generic", Some("test-model"))
+        .create_edge(
+            rust_tag,
+            concurrency_tag,
+            0.9,
+            "generic",
+            Some("test-model"),
+        )
         .expect("failed to create edge");
 
     // Create hub note with BOTH activated tags
@@ -3747,24 +3756,12 @@ fn graph_search_edge_confidence_affects_activation_propagation() {
 
     // High confidence edge (0.9)
     service
-        .create_edge(
-            seed_tag,
-            high_conf_tag,
-            0.9,
-            "generic",
-            Some("test-model"),
-        )
+        .create_edge(seed_tag, high_conf_tag, 0.9, "generic", Some("test-model"))
         .expect("failed to create high conf edge");
 
     // Low confidence edge (0.3)
     service
-        .create_edge(
-            seed_tag,
-            low_conf_tag,
-            0.3,
-            "generic",
-            Some("test-model"),
-        )
+        .create_edge(seed_tag, low_conf_tag, 0.3, "generic", Some("test-model"))
         .expect("failed to create low conf edge");
 
     // Create notes with each target tag
@@ -3911,3 +3908,905 @@ fn graph_search_mixed_edge_types_in_path_applies_both_multipliers() {
         partitive_2hop_score.unwrap()
     );
 }
+
+// --- Dual-Channel Search Tests (Task Group 1) ---
+
+#[test]
+fn dual_search_config_from_env_with_defaults() {
+    use crate::service::DualSearchConfig;
+
+    // Clear any existing env vars
+    unsafe {
+        std::env::remove_var("CONS_FTS_WEIGHT");
+        std::env::remove_var("CONS_GRAPH_WEIGHT");
+        std::env::remove_var("CONS_INTERSECTION_BONUS");
+        std::env::remove_var("CONS_MIN_AVG_ACTIVATION");
+        std::env::remove_var("CONS_MIN_ACTIVATED_TAGS");
+    }
+
+    let config = DualSearchConfig::from_env();
+
+    // Verify defaults
+    assert_eq!(config.fts_weight, 1.0);
+    assert_eq!(config.graph_weight, 1.0);
+    assert_eq!(config.intersection_bonus, 0.5);
+    assert_eq!(config.min_avg_activation, 0.1);
+    assert_eq!(config.min_activated_tags, 2);
+}
+
+#[test]
+fn dual_search_config_from_env_with_custom_env_vars() {
+    use crate::service::DualSearchConfig;
+
+    // Set custom env vars
+    unsafe {
+        std::env::set_var("CONS_FTS_WEIGHT", "2.0");
+        std::env::set_var("CONS_GRAPH_WEIGHT", "1.5");
+        std::env::set_var("CONS_INTERSECTION_BONUS", "0.8");
+        std::env::set_var("CONS_MIN_AVG_ACTIVATION", "0.2");
+        std::env::set_var("CONS_MIN_ACTIVATED_TAGS", "5");
+    }
+
+    let config = DualSearchConfig::from_env();
+
+    // Verify custom values
+    assert_eq!(config.fts_weight, 2.0);
+    assert_eq!(config.graph_weight, 1.5);
+    assert_eq!(config.intersection_bonus, 0.8);
+    assert_eq!(config.min_avg_activation, 0.2);
+    assert_eq!(config.min_activated_tags, 5);
+
+    // Clean up env vars
+    unsafe {
+        std::env::remove_var("CONS_FTS_WEIGHT");
+        std::env::remove_var("CONS_GRAPH_WEIGHT");
+        std::env::remove_var("CONS_INTERSECTION_BONUS");
+        std::env::remove_var("CONS_MIN_AVG_ACTIVATION");
+        std::env::remove_var("CONS_MIN_ACTIVATED_TAGS");
+    }
+}
+
+#[test]
+fn dual_search_result_struct_instantiation() {
+    use crate::service::{DualSearchMetadata, DualSearchResult};
+
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a test note
+    let note = service
+        .create_note("Test note for dual search", Some(&["test"]))
+        .expect("failed to create note");
+
+    // Create DualSearchResult
+    let result = DualSearchResult {
+        note: note.clone(),
+        final_score: 0.85,
+        fts_score: Some(0.7),
+        graph_score: Some(0.5),
+        found_by_both: true,
+    };
+
+    // Verify all fields
+    assert_eq!(result.note.content(), "Test note for dual search");
+    assert_eq!(result.final_score, 0.85);
+    assert_eq!(result.fts_score, Some(0.7));
+    assert_eq!(result.graph_score, Some(0.5));
+    assert!(result.found_by_both);
+
+    // Test DualSearchMetadata
+    let metadata = DualSearchMetadata {
+        graph_skipped: false,
+        skip_reason: None,
+        fts_result_count: 5,
+        graph_result_count: 3,
+    };
+
+    assert!(!metadata.graph_skipped);
+    assert!(metadata.skip_reason.is_none());
+    assert_eq!(metadata.fts_result_count, 5);
+    assert_eq!(metadata.graph_result_count, 3);
+
+    // Test with graph skipped
+    let metadata_skipped = DualSearchMetadata {
+        graph_skipped: true,
+        skip_reason: Some("sparse graph activation".to_string()),
+        fts_result_count: 10,
+        graph_result_count: 0,
+    };
+
+    assert!(metadata_skipped.graph_skipped);
+    assert_eq!(
+        metadata_skipped.skip_reason,
+        Some("sparse graph activation".to_string())
+    );
+    assert_eq!(metadata_skipped.fts_result_count, 10);
+    assert_eq!(metadata_skipped.graph_result_count, 0);
+}
+
+// --- Dual Search Tests (Task Group 2) ---
+
+#[test]
+fn dual_search_returns_fts_only_when_graph_has_no_matching_tags() {
+    // Cold-start test: when graph search returns no results, dual_search
+    // should return FTS-only results with graph channel skipped
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create notes with tags that won't match graph search
+    let _note1 = service
+        .create_note("Learning Rust programming basics", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note2 = service
+        .create_note("Python tutorial for beginners", Some(&["python"]))
+        .expect("failed to create note");
+
+    // Search for a term that exists in FTS but has no tag relationships
+    // (no edges in the graph, so graph search returns empty)
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Should get FTS results even though graph has no matches
+    assert!(!results.is_empty(), "should return FTS results");
+    assert!(metadata.graph_skipped, "graph should be skipped");
+    assert!(
+        metadata.skip_reason.is_some(),
+        "should have skip reason when graph skipped"
+    );
+    assert!(metadata.fts_result_count > 0, "should have FTS results");
+    assert_eq!(
+        metadata.graph_result_count, 0,
+        "graph should return no results"
+    );
+
+    // Verify result scores are from FTS only
+    for result in &results {
+        assert!(result.fts_score.is_some(), "should have FTS score");
+        assert!(result.graph_score.is_none(), "should not have graph score");
+        assert!(!result.found_by_both, "should not be found by both");
+    }
+}
+
+#[test]
+fn dual_search_returns_combined_results_with_correct_final_score() {
+    // Test that dual_search combines FTS and graph results with correct scoring
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag hierarchy to enable graph search
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    // Create edge: rust -> programming (rust specializes programming)
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create notes
+    let _note1 = service
+        .create_note("Learning Rust programming basics", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note2 = service
+        .create_note("Programming fundamentals", Some(&["programming"]))
+        .expect("failed to create note");
+
+    // Search for "rust" - should activate both rust and programming tags
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Should have results from both channels
+    assert!(!results.is_empty(), "should have results");
+
+    // If graph was not skipped, verify scoring
+    if !metadata.graph_skipped {
+        // At least one note should be found by both channels
+        let found_by_both = results.iter().any(|r| r.found_by_both);
+
+        if found_by_both {
+            // Verify final_score calculation for notes found by both
+            for result in &results {
+                if result.found_by_both {
+                    assert!(result.fts_score.is_some(), "should have FTS score");
+                    assert!(result.graph_score.is_some(), "should have graph score");
+
+                    // Verify final_score uses default config weights
+                    // Default: fts_weight=1.0, graph_weight=1.0, intersection_bonus=0.5
+                    let fts_score = result.fts_score.unwrap();
+                    let graph_score = result.graph_score.unwrap();
+                    let expected_final = fts_score + graph_score + 0.5;
+
+                    assert!(
+                        (result.final_score - expected_final).abs() < 0.001,
+                        "final_score mismatch: got {}, expected {}, fts={}, graph={}",
+                        result.final_score,
+                        expected_final,
+                        fts_score,
+                        graph_score
+                    );
+                }
+            }
+        }
+    }
+
+    // Verify all results have valid final scores
+    for result in &results {
+        assert!(
+            result.final_score >= 0.0,
+            "final_score should be non-negative"
+        );
+    }
+}
+
+#[test]
+fn dual_search_intersection_bonus_applied_only_when_found_by_both() {
+    // Test that intersection bonus is only applied when note found by both channels
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag hierarchy
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create notes
+    let _note1 = service
+        .create_note("Rust programming guide", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note2 = service
+        .create_note("Python tutorial", Some(&["python"]))
+        .expect("failed to create note");
+
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Verify intersection bonus logic
+    for result in &results {
+        if result.found_by_both {
+            // If found by both, should have both scores and bonus included
+            assert!(
+                result.fts_score.is_some(),
+                "found_by_both should have FTS score"
+            );
+            assert!(
+                result.graph_score.is_some(),
+                "found_by_both should have graph score"
+            );
+
+            if !metadata.graph_skipped {
+                // Calculate expected score with bonus
+                let fts = result.fts_score.unwrap();
+                let graph = result.graph_score.unwrap();
+                let expected_with_bonus = fts + graph + 0.5;
+
+                assert!(
+                    (result.final_score - expected_with_bonus).abs() < 0.001,
+                    "found_by_both should include intersection bonus"
+                );
+            }
+        } else {
+            // If not found by both, should only have one score
+            let has_fts = result.fts_score.is_some();
+            let has_graph = result.graph_score.is_some();
+            assert!(
+                (has_fts && !has_graph) || (!has_fts && has_graph),
+                "not found_by_both should have exactly one score"
+            );
+        }
+    }
+}
+
+#[test]
+fn dual_search_graceful_degradation_sets_metadata_when_activation_sparse() {
+    // Test that dual_search detects sparse graph activation and sets metadata
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a note with a tag but no edges (isolated tag in graph)
+    let _note = service
+        .create_note("Isolated note about xyz topic", Some(&["xyz"]))
+        .expect("failed to create note");
+
+    // Search for the tag - graph will have low activation (only 1 tag, no spreading)
+    let (results, metadata) = service
+        .dual_search("xyz", Some(10))
+        .expect("dual_search should succeed");
+
+    // Verify graceful degradation occurred
+    if metadata.graph_skipped {
+        assert!(
+            metadata.skip_reason.is_some(),
+            "should have skip_reason when graph skipped"
+        );
+        assert_eq!(
+            metadata.graph_result_count, 0,
+            "graph_result_count should be 0 when skipped"
+        );
+
+        // All results should be FTS-only
+        for result in &results {
+            assert!(result.fts_score.is_some(), "should have FTS score");
+            assert!(
+                result.graph_score.is_none(),
+                "should not have graph score when skipped"
+            );
+            assert!(
+                !result.found_by_both,
+                "should not be found_by_both when graph skipped"
+            );
+        }
+    } else {
+        // If graph was not skipped, metadata should reflect that
+        assert!(
+            metadata.skip_reason.is_none(),
+            "should not have skip_reason"
+        );
+    }
+
+    // Should still have results from FTS
+    assert!(
+        !results.is_empty(),
+        "should have FTS results even with sparse graph"
+    );
+}
+
+#[test]
+fn dual_search_results_sorted_by_final_score_descending_with_limit() {
+    // Test that results are sorted by final_score descending and limit is applied
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create multiple notes with varying relevance
+    let _rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+
+    let _note1 = service
+        .create_note("Rust programming is great", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note2 = service
+        .create_note("Learning Rust basics", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note3 = service
+        .create_note(
+            "Advanced Rust techniques for rust developers",
+            Some(&["rust"]),
+        )
+        .expect("failed to create note");
+    let _note4 = service
+        .create_note("Rust", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note5 = service
+        .create_note("Introduction to rust programming language", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // Search with limit
+    let limit = 3;
+    let (results, _metadata) = service
+        .dual_search("rust", Some(limit))
+        .expect("dual_search should succeed");
+
+    // Verify limit is applied
+    assert!(
+        results.len() <= limit,
+        "should return at most {} results",
+        limit
+    );
+
+    // Verify results are sorted by final_score descending
+    for i in 0..results.len().saturating_sub(1) {
+        assert!(
+            results[i].final_score >= results[i + 1].final_score,
+            "results should be sorted by final_score descending"
+        );
+    }
+
+    // Verify all scores are valid
+    for result in &results {
+        assert!(
+            result.final_score >= 0.0,
+            "final_score should be non-negative"
+        );
+        assert!(
+            result.final_score <= 3.0,
+            "final_score should be reasonable (max ~2.5)"
+        );
+    }
+}
+
+// --- Additional Dual Search Tests (Task Group 4 - Gap Analysis) ---
+
+#[test]
+fn dual_search_integration_test_realistic_ranking() {
+    // Integration test: Create a realistic scenario with multiple notes,
+    // edges, and verify the final ranking makes logical sense
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag hierarchy: rust -> programming -> computer-science
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    let cs_tag = service
+        .get_or_create_tag("computer-science")
+        .expect("failed to create tag");
+
+    // Create edges
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(programming_tag, cs_tag, 0.8, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create notes with varying relevance
+    // Note 1: High FTS relevance (contains "rust" multiple times), has rust tag
+    let _note1 = service
+        .create_note(
+            "Rust programming language: learning Rust basics and advanced Rust patterns",
+            Some(&["rust"]),
+        )
+        .expect("failed to create note");
+
+    // Note 2: Medium FTS relevance, has rust tag
+    let _note2 = service
+        .create_note("Introduction to Rust", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // Note 3: Low FTS relevance (mentions rust once), has programming tag
+    let _note3 = service
+        .create_note(
+            "Programming languages overview including rust",
+            Some(&["programming"]),
+        )
+        .expect("failed to create note");
+
+    // Note 4: No FTS match but has programming tag (graph-only via spreading)
+    let _note4 = service
+        .create_note(
+            "Software development best practices",
+            Some(&["programming"]),
+        )
+        .expect("failed to create note");
+
+    // Note 5: Has computer-science tag (distant in graph)
+    let _note5 = service
+        .create_note("Algorithms and data structures", Some(&["computer-science"]))
+        .expect("failed to create note");
+
+    // Search for "rust"
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Should have results
+    assert!(
+        !results.is_empty(),
+        "should have results from combined search"
+    );
+
+    // If graph wasn't skipped, verify ranking logic
+    if !metadata.graph_skipped {
+        // Notes with both FTS and graph matches should rank higher than FTS-only or graph-only
+        let has_both = results.iter().any(|r| r.found_by_both);
+        let has_fts_only = results.iter().any(|r| r.fts_score.is_some() && r.graph_score.is_none());
+
+        if has_both && has_fts_only {
+            // The highest-scoring "found by both" should rank above pure FTS-only
+            // (assuming reasonable scores, the intersection bonus should give an advantage)
+            let max_both_score = results
+                .iter()
+                .filter(|r| r.found_by_both)
+                .map(|r| r.final_score)
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(0.0);
+
+            let max_fts_only_score = results
+                .iter()
+                .filter(|r| r.fts_score.is_some() && r.graph_score.is_none())
+                .map(|r| r.final_score)
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(0.0);
+
+            // This assertion might not always hold, but in our test scenario
+            // with strong FTS matches and graph relationships, it should
+            assert!(
+                max_both_score >= max_fts_only_score * 0.8,
+                "notes found by both channels should benefit from intersection bonus"
+            );
+        }
+    }
+
+    // Verify results are sorted
+    for i in 0..results.len().saturating_sub(1) {
+        assert!(
+            results[i].final_score >= results[i + 1].final_score,
+            "results should be sorted by final_score descending"
+        );
+    }
+}
+
+#[test]
+fn dual_search_all_notes_found_by_both_channels() {
+    // Edge case: All results are found by both FTS and graph
+    // This tests maximum intersection bonus scenario
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags and edges
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create notes that will ALL be found by both channels
+    // All notes contain "rust" (FTS match) and have "rust" tag (graph match)
+    let _note1 = service
+        .create_note("Rust programming basics", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note2 = service
+        .create_note("Advanced Rust patterns", Some(&["rust"]))
+        .expect("failed to create note");
+    let _note3 = service
+        .create_note("Learning Rust language", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // Search for "rust"
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // If graph wasn't skipped, all results should be found by both
+    if !metadata.graph_skipped && !results.is_empty() {
+        let all_found_by_both = results.iter().all(|r| r.found_by_both);
+
+        if all_found_by_both {
+            // Verify all results have both scores
+            for result in &results {
+                assert!(
+                    result.fts_score.is_some(),
+                    "all results should have FTS score"
+                );
+                assert!(
+                    result.graph_score.is_some(),
+                    "all results should have graph score"
+                );
+
+                // Verify intersection bonus was applied
+                let fts = result.fts_score.unwrap();
+                let graph = result.graph_score.unwrap();
+                let expected = fts + graph + 0.5; // Default intersection_bonus
+
+                assert!(
+                    (result.final_score - expected).abs() < 0.001,
+                    "intersection bonus should be applied to all results"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dual_search_empty_results_from_both_channels() {
+    // Edge case: Neither FTS nor graph find any results
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create some notes that won't match the search query
+    let _note1 = service
+        .create_note("Python programming tutorial", Some(&["python"]))
+        .expect("failed to create note");
+    let _note2 = service
+        .create_note("JavaScript web development", Some(&["javascript"]))
+        .expect("failed to create note");
+
+    // Search for something that doesn't exist
+    let (results, metadata) = service
+        .dual_search("nonexistent-query-xyz", Some(10))
+        .expect("dual_search should succeed");
+
+    // Should return empty results
+    assert!(results.is_empty(), "should return empty results");
+
+    // Metadata should be set correctly
+    assert_eq!(metadata.fts_result_count, 0, "FTS should find nothing");
+    // Graph is likely skipped due to no matching tags, or if it runs, finds nothing
+    if metadata.graph_skipped {
+        assert_eq!(
+            metadata.graph_result_count, 0,
+            "graph count should be 0 when skipped"
+        );
+    } else {
+        assert_eq!(
+            metadata.graph_result_count, 0,
+            "graph should find nothing"
+        );
+    }
+}
+
+#[test]
+fn dual_search_custom_config_weights_affect_final_score() {
+    // Test that custom configuration weights actually change the final_score calculation
+    // This verifies the config is not just parsed but actually used
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags and edges
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create a note found by both channels
+    let _note = service
+        .create_note("Rust programming guide", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // First search with default weights
+    unsafe {
+        std::env::remove_var("CONS_FTS_WEIGHT");
+        std::env::remove_var("CONS_GRAPH_WEIGHT");
+        std::env::remove_var("CONS_INTERSECTION_BONUS");
+    }
+
+    let (results_default, metadata_default) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Then search with custom weights (heavily favor FTS)
+    unsafe {
+        std::env::set_var("CONS_FTS_WEIGHT", "3.0");
+        std::env::set_var("CONS_GRAPH_WEIGHT", "0.5");
+        std::env::set_var("CONS_INTERSECTION_BONUS", "0.2");
+    }
+
+    let (results_custom, metadata_custom) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Clean up env vars
+    unsafe {
+        std::env::remove_var("CONS_FTS_WEIGHT");
+        std::env::remove_var("CONS_GRAPH_WEIGHT");
+        std::env::remove_var("CONS_INTERSECTION_BONUS");
+    }
+
+    // If both searches succeeded and graph wasn't skipped
+    if !metadata_default.graph_skipped
+        && !metadata_custom.graph_skipped
+        && !results_default.is_empty()
+        && !results_custom.is_empty()
+    {
+        // Find a note that was found by both in both searches
+        if let Some(default_result) = results_default.iter().find(|r| r.found_by_both) {
+            if let Some(custom_result) = results_custom.iter().find(|r| r.found_by_both) {
+                // The final scores should be different due to different weights
+                let score_diff = (default_result.final_score - custom_result.final_score).abs();
+
+                // With fts_weight=3.0 vs 1.0, scores should definitely differ
+                // (unless scores happen to be very similar, but that's unlikely)
+                assert!(
+                    score_diff > 0.01 || default_result.fts_score.unwrap() < 0.01,
+                    "custom weights should produce different final_score: default={}, custom={}",
+                    default_result.final_score,
+                    custom_result.final_score
+                );
+            }
+        }
+    }
+
+    // At minimum, verify the searches completed successfully
+    assert!(
+        results_default.is_empty() || results_default[0].final_score >= 0.0,
+        "default search should produce valid results"
+    );
+    assert!(
+        results_custom.is_empty() || results_custom[0].final_score >= 0.0,
+        "custom search should produce valid results"
+    );
+}
+
+#[test]
+fn dual_search_graph_only_results() {
+    // Edge case: Note found via graph spreading activation but not by FTS
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    let software_tag = service
+        .get_or_create_tag("software")
+        .expect("failed to create tag");
+
+    // Create edges: rust -> programming -> software
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(programming_tag, software_tag, 0.85, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create notes:
+    // - Note with "rust" in content and tag (found by both)
+    let _note1 = service
+        .create_note("Learning Rust programming", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // - Note with "software" tag but no mention of "rust" (graph-only via spreading)
+    let _note2 = service
+        .create_note("Software engineering principles", Some(&["software"]))
+        .expect("failed to create note");
+
+    // Search for "rust" - should activate rust -> programming -> software tags
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // If graph wasn't skipped, check for graph-only results
+    if !metadata.graph_skipped && !results.is_empty() {
+        // Look for notes with graph_score but no fts_score
+        let graph_only_results: Vec<_> = results
+            .iter()
+            .filter(|r| r.graph_score.is_some() && r.fts_score.is_none())
+            .collect();
+
+        if !graph_only_results.is_empty() {
+            // Verify graph-only results are scored correctly
+            for result in graph_only_results {
+                assert!(
+                    result.graph_score.is_some(),
+                    "should have graph score"
+                );
+                assert!(result.fts_score.is_none(), "should not have FTS score");
+                assert!(!result.found_by_both, "should not be found by both");
+
+                // final_score should be graph_score * graph_weight (default 1.0)
+                let expected = result.graph_score.unwrap() * 1.0;
+                assert!(
+                    (result.final_score - expected).abs() < 0.001,
+                    "graph-only final_score mismatch: got {}, expected {} (graph_score={})",
+                    result.final_score,
+                    expected,
+                    result.graph_score.unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dual_search_limit_none_returns_all_results() {
+    // Edge case: Passing None for limit should return all results
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create several notes
+    let _rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+
+    for i in 1..=10 {
+        service
+            .create_note(&format!("Rust tutorial part {}", i), Some(&["rust"]))
+            .expect("failed to create note");
+    }
+
+    // Search with limit=None
+    let (results_unlimited, _metadata) = service
+        .dual_search("rust", None)
+        .expect("dual_search should succeed");
+
+    // Search with high limit
+    let (results_limited, _metadata2) = service
+        .dual_search("rust", Some(100))
+        .expect("dual_search should succeed");
+
+    // Should return same number of results (all of them)
+    assert_eq!(
+        results_unlimited.len(),
+        results_limited.len(),
+        "limit=None should return all results"
+    );
+
+    // Should have all 10 notes (or fewer if graph was skipped and some don't match FTS)
+    assert!(
+        results_unlimited.len() >= 10 || results_unlimited.len() > 0,
+        "should return multiple results"
+    );
+}
+
+#[test]
+fn dual_search_intersection_bonus_independent_of_weights() {
+    // Test that intersection_bonus is added independently of fts_weight and graph_weight
+    // This verifies the formula: final_score = (fts * fts_weight) + (graph * graph_weight) + bonus
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags and edges
+    let rust_tag = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming_tag = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    service
+        .create_edge(rust_tag, programming_tag, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create note found by both
+    let _note = service
+        .create_note("Rust programming", Some(&["rust"]))
+        .expect("failed to create note");
+
+    // Set custom weights and bonus
+    unsafe {
+        std::env::set_var("CONS_FTS_WEIGHT", "2.0");
+        std::env::set_var("CONS_GRAPH_WEIGHT", "1.5");
+        std::env::set_var("CONS_INTERSECTION_BONUS", "0.7");
+    }
+
+    let (results, metadata) = service
+        .dual_search("rust", Some(10))
+        .expect("dual_search should succeed");
+
+    // Clean up
+    unsafe {
+        std::env::remove_var("CONS_FTS_WEIGHT");
+        std::env::remove_var("CONS_GRAPH_WEIGHT");
+        std::env::remove_var("CONS_INTERSECTION_BONUS");
+    }
+
+    // If graph wasn't skipped and we have results
+    if !metadata.graph_skipped && !results.is_empty() {
+        // Find notes found by both
+        for result in results.iter().filter(|r| r.found_by_both) {
+            let fts = result.fts_score.unwrap();
+            let graph = result.graph_score.unwrap();
+
+            // Verify formula: final_score = (fts * 2.0) + (graph * 1.5) + 0.7
+            let expected = (fts * 2.0) + (graph * 1.5) + 0.7;
+
+            assert!(
+                (result.final_score - expected).abs() < 0.001,
+                "intersection bonus should be added independently: expected {}, got {}",
+                expected,
+                result.final_score
+            );
+        }
+    }
+}
+

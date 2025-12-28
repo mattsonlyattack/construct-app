@@ -38,6 +38,124 @@ pub struct SearchResult {
     pub relevance_score: f64,
 }
 
+/// Configuration for dual-channel search combining FTS and graph-based retrieval.
+///
+/// Parsed from environment variables at method call time with fallback defaults.
+#[derive(Debug, Clone)]
+pub struct DualSearchConfig {
+    /// Weight applied to FTS channel scores (default 1.0).
+    pub fts_weight: f64,
+    /// Weight applied to graph channel scores (default 1.0).
+    pub graph_weight: f64,
+    /// Bonus score added when a note is found by both channels (default 0.5).
+    pub intersection_bonus: f64,
+    /// Minimum average activation threshold for graph channel (default 0.1).
+    pub min_avg_activation: f64,
+    /// Minimum number of activated tags required for graph channel (default 2).
+    pub min_activated_tags: usize,
+}
+
+impl Default for DualSearchConfig {
+    fn default() -> Self {
+        Self {
+            fts_weight: 1.0,
+            graph_weight: 1.0,
+            intersection_bonus: 0.5,
+            min_avg_activation: 0.1,
+            min_activated_tags: 2,
+        }
+    }
+}
+
+impl DualSearchConfig {
+    /// Parses configuration from environment variables.
+    ///
+    /// Falls back to defaults when env vars not set or invalid.
+    ///
+    /// # Environment Variables
+    ///
+    /// - `CONS_FTS_WEIGHT` (f64, default 1.0): Weight for FTS channel scores
+    /// - `CONS_GRAPH_WEIGHT` (f64, default 1.0): Weight for graph channel scores
+    /// - `CONS_INTERSECTION_BONUS` (f64, default 0.5): Bonus when found by both channels
+    /// - `CONS_MIN_AVG_ACTIVATION` (f64, default 0.1): Minimum average activation threshold
+    /// - `CONS_MIN_ACTIVATED_TAGS` (usize, default 2): Minimum activated tags required
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::service::DualSearchConfig;
+    ///
+    /// let config = DualSearchConfig::from_env();
+    /// assert_eq!(config.fts_weight, 1.0); // default when env var not set
+    /// ```
+    pub fn from_env() -> Self {
+        let fts_weight = std::env::var("CONS_FTS_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0);
+
+        let graph_weight = std::env::var("CONS_GRAPH_WEIGHT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0);
+
+        let intersection_bonus = std::env::var("CONS_INTERSECTION_BONUS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.5);
+
+        let min_avg_activation = std::env::var("CONS_MIN_AVG_ACTIVATION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.1);
+
+        let min_activated_tags = std::env::var("CONS_MIN_ACTIVATED_TAGS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2);
+
+        Self {
+            fts_weight,
+            graph_weight,
+            intersection_bonus,
+            min_avg_activation,
+            min_activated_tags,
+        }
+    }
+}
+
+/// Search result for dual-channel retrieval combining FTS and graph scores.
+///
+/// Contains a note with scores from both search channels and a combined final score.
+#[derive(Debug, Clone)]
+pub struct DualSearchResult {
+    /// The matched note with full content and tags.
+    pub note: Note,
+    /// Combined final score (0.0-1.0, higher = more relevant).
+    pub final_score: f64,
+    /// FTS channel score if found by FTS search (0.0-1.0).
+    pub fts_score: Option<f64>,
+    /// Graph channel score if found by graph search (0.0-1.0).
+    pub graph_score: Option<f64>,
+    /// True if the note was found by both FTS and graph channels.
+    pub found_by_both: bool,
+}
+
+/// Metadata about dual-channel search execution.
+///
+/// Captures information about whether graph channel was used and result counts.
+#[derive(Debug, Clone)]
+pub struct DualSearchMetadata {
+    /// True if graph channel was skipped due to sparse activation.
+    pub graph_skipped: bool,
+    /// Reason why graph channel was skipped (e.g., "sparse graph activation").
+    pub skip_reason: Option<String>,
+    /// Number of results returned by FTS channel.
+    pub fts_result_count: usize,
+    /// Number of results returned by graph channel.
+    pub graph_result_count: usize,
+}
+
 /// Service layer providing note management operations.
 ///
 /// NoteService owns a Database instance and provides high-level business logic
@@ -1787,6 +1905,211 @@ impl NoteService {
         }
 
         Ok(results)
+    }
+
+    /// Searches for notes using dual-channel retrieval combining FTS and graph search.
+    ///
+    /// Executes both FTS (via `search_notes`) and graph-based (via `graph_search`)
+    /// retrieval in parallel, then merges results using additive RRF-style scoring
+    /// with an intersection bonus for notes found by both channels.
+    ///
+    /// Implements graceful degradation: when graph activation is sparse (below
+    /// `min_avg_activation` threshold or fewer than `min_activated_tags` tags activated),
+    /// the method falls back to FTS-only results to avoid noisy graph scores.
+    ///
+    /// # Algorithm
+    ///
+    /// 1. Load configuration from environment (or use defaults)
+    /// 2. Execute FTS search via `search_notes(query, None)` (unlimited)
+    /// 3. Execute graph search via `graph_search(query, None)` (unlimited)
+    /// 4. Check cold-start conditions on graph results:
+    ///    - Average relevance score < `min_avg_activation`, OR
+    ///    - Result count < `min_activated_tags`
+    /// 5. If cold-start detected, skip graph channel and return FTS-only results
+    /// 6. Otherwise, merge results using HashMap<NoteId, DualSearchResult>
+    /// 7. Calculate final scores:
+    ///    - `final_score = (fts_score * fts_weight) + (graph_score * graph_weight) + intersection_bonus`
+    ///    - Intersection bonus only applied when `found_by_both == true`
+    /// 8. Sort by `final_score` descending
+    /// 9. Apply `limit` if specified
+    /// 10. Return results with metadata
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - Search query string (whitespace-separated terms)
+    /// * `limit` - Optional maximum number of results to return
+    ///
+    /// # Returns
+    ///
+    /// Returns tuple of `(Vec<DualSearchResult>, DualSearchMetadata)`:
+    /// - Results ordered by `final_score` descending
+    /// - Metadata indicating whether graph was skipped and result counts
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create notes with tags and edges
+    /// let rust_tag = service.get_or_create_tag("rust")?;
+    /// let prog_tag = service.get_or_create_tag("programming")?;
+    /// service.create_edge(rust_tag, prog_tag, 0.9, "generic", Some("test"))?;
+    /// service.create_note("Learning Rust programming", Some(&["rust"]))?;
+    ///
+    /// // Dual-channel search combines FTS and graph results
+    /// let (results, metadata) = service.dual_search("rust", Some(10))?;
+    ///
+    /// for result in &results {
+    ///     println!("Final score: {:.2}, Note: {}", result.final_score, result.note.content());
+    ///     if result.found_by_both {
+    ///         println!("  Found by both FTS and graph (bonus applied)");
+    ///     }
+    /// }
+    ///
+    /// if metadata.graph_skipped {
+    ///     println!("Note: Graph search was skipped ({})", metadata.skip_reason.unwrap());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn dual_search(
+        &self,
+        query: &str,
+        limit: Option<usize>,
+    ) -> Result<(Vec<DualSearchResult>, DualSearchMetadata)> {
+        use std::collections::HashMap;
+
+        // Load configuration from environment
+        let config = DualSearchConfig::from_env();
+
+        // Execute both search channels
+        let fts_results = self.search_notes(query, None)?;
+        let graph_results = self.graph_search(query, None)?;
+
+        let fts_result_count = fts_results.len();
+        let graph_result_count = graph_results.len();
+
+        // Check cold-start conditions for graph channel
+        let should_skip_graph = if graph_results.is_empty() {
+            true
+        } else {
+            // Calculate average activation score from graph results
+            let avg_activation: f64 = graph_results.iter().map(|r| r.relevance_score).sum::<f64>()
+                / graph_results.len() as f64;
+
+            // Check both conditions (OR relationship)
+            avg_activation < config.min_avg_activation
+                || graph_results.len() < config.min_activated_tags
+        };
+
+        // If cold-start detected, return FTS-only results
+        if should_skip_graph {
+            let mut fts_only_results: Vec<DualSearchResult> = fts_results
+                .into_iter()
+                .map(|r| DualSearchResult {
+                    final_score: r.relevance_score * config.fts_weight,
+                    note: r.note,
+                    fts_score: Some(r.relevance_score),
+                    graph_score: None,
+                    found_by_both: false,
+                })
+                .collect();
+
+            // Sort by final_score descending
+            fts_only_results.sort_by(|a, b| {
+                b.final_score
+                    .partial_cmp(&a.final_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Apply limit
+            if let Some(lim) = limit {
+                fts_only_results.truncate(lim);
+            }
+
+            let metadata = DualSearchMetadata {
+                graph_skipped: true,
+                skip_reason: Some("sparse graph activation".to_string()),
+                fts_result_count,
+                graph_result_count: 0,
+            };
+
+            return Ok((fts_only_results, metadata));
+        }
+
+        // Merge results using HashMap keyed by NoteId
+        let mut merged: HashMap<i64, DualSearchResult> = HashMap::new();
+
+        // Add FTS results
+        for fts_result in fts_results {
+            let note_id = fts_result.note.id().get();
+            merged.insert(
+                note_id,
+                DualSearchResult {
+                    note: fts_result.note,
+                    final_score: fts_result.relevance_score * config.fts_weight,
+                    fts_score: Some(fts_result.relevance_score),
+                    graph_score: None,
+                    found_by_both: false,
+                },
+            );
+        }
+
+        // Add or merge graph results
+        for graph_result in graph_results {
+            let note_id = graph_result.note.id().get();
+
+            if let Some(existing) = merged.get_mut(&note_id) {
+                // Note found by both channels - merge scores
+                existing.graph_score = Some(graph_result.relevance_score);
+                existing.found_by_both = true;
+
+                // Recalculate final_score with both channels and intersection bonus
+                let fts_contribution = existing.fts_score.unwrap() * config.fts_weight;
+                let graph_contribution = graph_result.relevance_score * config.graph_weight;
+                existing.final_score =
+                    fts_contribution + graph_contribution + config.intersection_bonus;
+            } else {
+                // Note found only by graph channel
+                merged.insert(
+                    note_id,
+                    DualSearchResult {
+                        note: graph_result.note,
+                        final_score: graph_result.relevance_score * config.graph_weight,
+                        fts_score: None,
+                        graph_score: Some(graph_result.relevance_score),
+                        found_by_both: false,
+                    },
+                );
+            }
+        }
+
+        // Convert HashMap to Vec and sort by final_score descending
+        let mut results: Vec<DualSearchResult> = merged.into_values().collect();
+        results.sort_by(|a, b| {
+            b.final_score
+                .partial_cmp(&a.final_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Apply limit
+        if let Some(lim) = limit {
+            results.truncate(lim);
+        }
+
+        // Build metadata
+        let metadata = DualSearchMetadata {
+            graph_skipped: false,
+            skip_reason: None,
+            fts_result_count,
+            graph_result_count,
+        };
+
+        Ok((results, metadata))
     }
 }
 

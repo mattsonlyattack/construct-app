@@ -1,0 +1,17 @@
+task_groups:
+  - name: Configuration and Data Structures
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Dual Search Core Logic
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: CLI Integration
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all

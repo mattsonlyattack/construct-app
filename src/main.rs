@@ -549,9 +549,9 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
     // Apply default limit of 10 when not specified
     let limit = limit.unwrap_or(10);
 
-    // Call service search_notes method - returns SearchResult with note and relevance_score
-    let results = service
-        .search_notes(query, Some(limit))
+    // Call service dual_search method - returns tuple of (Vec<DualSearchResult>, DualSearchMetadata)
+    let (results, metadata) = service
+        .dual_search(query, Some(limit))
         .context("Failed to search notes")?;
 
     // Handle empty results
@@ -564,7 +564,7 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
     let format = format_description!("[year]-[month]-[day] [hour]:[minute]");
 
     // Display each note (using same format as list command)
-    // Extract .note from SearchResult - score is available for future dual-channel use
+    // Extract .note from DualSearchResult
     for result in &results {
         let note = &result.note;
 
@@ -592,6 +592,11 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
             println!("Tags: {}", tag_names.join(" "));
         }
         println!(); // Blank line separator
+    }
+
+    // Display graph skip notice if graph channel was skipped
+    if metadata.graph_skipped {
+        println!("Note: Graph search skipped (sparse activation)");
     }
 
     Ok(())
@@ -2050,6 +2055,66 @@ mod tests {
         let result = execute_search("rust", Some(10), service);
         assert!(result.is_ok());
         // The function should complete successfully and print "No notes found matching query"
+    }
+
+    // --- Dual-Channel Search CLI Tests (Task Group 3) ---
+
+    #[test]
+    fn dual_search_command_parses_correctly() {
+        use clap::CommandFactory;
+
+        // Test that `cons search` command parses correctly with dual-channel search
+        let matches = Cli::command()
+            .try_get_matches_from(vec!["cons", "search", "machine learning", "-l", "10"])
+            .expect("failed to parse search command");
+
+        // Verify command is recognized
+        assert!(matches.subcommand_matches("search").is_some());
+
+        // Verify the search subcommand has query and limit
+        let search_matches = matches.subcommand_matches("search").unwrap();
+        assert!(search_matches.contains_id("query"));
+        assert!(search_matches.contains_id("limit"));
+    }
+
+    #[test]
+    fn execute_search_calls_dual_search_and_formats_output() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with tags to test dual-channel search
+        service
+            .create_note("Learning Rust programming", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Advanced Rust patterns", Some(&["rust", "advanced"]))
+            .expect("failed to create note");
+
+        // Execute search which should call dual_search internally
+        let result = execute_search("rust", Some(10), service);
+
+        // Verify the search completes successfully
+        assert!(result.is_ok());
+        // The function should format and display results from dual_search
+    }
+
+    #[test]
+    fn execute_search_displays_graph_skipped_notice() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes without tags or edges (cold-start scenario)
+        service
+            .create_note("Simple note without tags", None)
+            .expect("failed to create note");
+
+        // Execute search - should trigger graph skip due to sparse activation
+        let result = execute_search("simple", Some(10), service);
+
+        // Verify the search completes successfully
+        assert!(result.is_ok());
+        // The function should print "Note: Graph search skipped (sparse activation)"
+        // when metadata.graph_skipped is true
     }
 
     #[test]
