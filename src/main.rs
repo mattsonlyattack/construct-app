@@ -1011,6 +1011,7 @@ fn parse_tags(input: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn parse_tags_with_normal_input() {
@@ -2195,6 +2196,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn execute_hierarchy_suggest_handles_missing_ollama_model() {
         // Ensure OLLAMA_MODEL is not set for this test
         unsafe { std::env::remove_var("OLLAMA_MODEL") };
@@ -2217,6 +2219,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn execute_hierarchy_suggest_handles_empty_tag_set() {
         let db = Database::in_memory().expect("failed to create in-memory database");
 
