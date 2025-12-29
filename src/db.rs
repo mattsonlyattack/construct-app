@@ -75,6 +75,16 @@ impl Database {
             }
         }
 
+        // Backfill degree centrality for existing tags
+        // This is idempotent and safe to re-run on every database open
+        self.conn.execute(
+            "UPDATE tags SET degree_centrality = (
+                SELECT COUNT(*) FROM edges
+                WHERE source_tag_id = tags.id OR target_tag_id = tags.id
+            )",
+            [],
+        )?;
+
         // Initialize FTS5 virtual table and triggers
         self.initialize_fts()?;
 

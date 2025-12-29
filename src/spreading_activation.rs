@@ -126,6 +126,13 @@ pub fn spread_activation(
         return Ok(HashMap::new());
     }
 
+    // Query max degree centrality for boost calculation
+    let max_degree: f64 = conn
+        .query_row("SELECT MAX(degree_centrality) FROM tags", [], |row| {
+            row.get::<_, Option<i64>>(0)
+        })?
+        .unwrap_or(0) as f64;
+
     // Build VALUES clause for seed tags
     let seed_values: Vec<String> = seed_tags
         .iter()
@@ -158,9 +165,13 @@ pub fn spread_activation(
               AND a.activation * e.confidence * ?1 *
                   CASE WHEN e.hierarchy_type = 'partitive' THEN 0.5 ELSE 1.0 END >= ?3
         )
-        SELECT tag_id, SUM(activation) as total_activation
-        FROM activation_spread
-        GROUP BY tag_id
+        SELECT
+            a.tag_id,
+            SUM(a.activation) as total_activation,
+            COALESCE(t.degree_centrality, 0) as degree_centrality
+        FROM activation_spread a
+        LEFT JOIN tags t ON a.tag_id = t.id
+        GROUP BY a.tag_id
         "#,
         seed_values = seed_values_clause
     );
@@ -171,14 +182,24 @@ pub fn spread_activation(
         |row| {
             let tag_id: i64 = row.get(0)?;
             let activation: f64 = row.get(1)?;
-            Ok((TagId::new(tag_id), activation))
+            let degree_centrality: i64 = row.get(2)?;
+            Ok((TagId::new(tag_id), activation, degree_centrality))
         },
     )?;
 
     let mut result = HashMap::new();
     for row_result in rows {
-        let (tag_id, activation) = row_result?;
-        result.insert(tag_id, activation);
+        let (tag_id, activation, degree_centrality) = row_result?;
+
+        // Apply centrality boost: boosted_activation = activation * (1.0 + (degree_centrality / max_degree) * 0.3)
+        let boost = if max_degree > 0.0 {
+            1.0 + (degree_centrality as f64 / max_degree) * 0.3
+        } else {
+            1.0
+        };
+        let boosted_activation = activation * boost;
+
+        result.insert(tag_id, boosted_activation);
     }
 
     Ok(result)
@@ -496,6 +517,165 @@ mod tests {
         // The ratio should be approximately 0.5
         let ratio = partitive_activation / generic_activation;
         assert!((ratio - 0.5).abs() < 0.2); // Allow more tolerance for bidirectional effects
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_high_degree_tag_receives_centrality_boost() -> Result<()> {
+        let db = setup_test_db()?;
+        let conn = db.connection();
+
+        // Create a hub tag (tag 1) with high degree centrality by creating multiple edges
+        // Tag 1 connected to tags 2, 3, 4, 5 (degree = 4)
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (1, 2, 1.0, 'generic')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (1, 3, 1.0, 'generic')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (1, 4, 1.0, 'generic')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (1, 5, 1.0, 'generic')",
+            [],
+        )?;
+
+        // Update degree centrality for tag 1
+        conn.execute("UPDATE tags SET degree_centrality = 4 WHERE id = 1", [])?;
+
+        let mut seed_tags = HashMap::new();
+        seed_tags.insert(TagId::new(1), 1.0);
+
+        let config = SpreadingActivationConfig {
+            decay_factor: 1.0, // No decay to isolate boost effect
+            threshold: 0.01,
+            max_hops: 1,
+        };
+
+        let activated = spread_activation(conn, &seed_tags, &config)?;
+
+        // Tag 1 should receive 30% boost: 1.0 * (1.0 + (4/4) * 0.3) = 1.0 * 1.3 = 1.3
+        // Plus bidirectional activation from connected tags
+        let tag1_activation = activated.get(&TagId::new(1)).unwrap();
+
+        // The base activation should be at least 1.3x due to the boost
+        // With bidirectional edges, it will be higher
+        assert!(*tag1_activation >= 1.3);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_zero_degree_tag_receives_no_centrality_boost() -> Result<()> {
+        let db = setup_test_db()?;
+        let conn = db.connection();
+
+        // Create edge between tags 1 and 2
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (1, 2, 1.0, 'generic')",
+            [],
+        )?;
+
+        // Set tag 2 to have degree_centrality = 0 (isolated tag in this context)
+        conn.execute("UPDATE tags SET degree_centrality = 0 WHERE id = 2", [])?;
+        // Set tag 1 to have degree_centrality = 1
+        conn.execute("UPDATE tags SET degree_centrality = 1 WHERE id = 1", [])?;
+
+        let mut seed_tags = HashMap::new();
+        seed_tags.insert(TagId::new(2), 1.0);
+
+        let config = SpreadingActivationConfig {
+            decay_factor: 1.0,
+            threshold: 0.01,
+            max_hops: 0, // No hops to isolate the seed tag
+        };
+
+        let activated = spread_activation(conn, &seed_tags, &config)?;
+
+        // Tag 2 with degree_centrality = 0 should have boost = 1.0
+        // Activation = 1.0 * 1.0 = 1.0
+        let tag2_activation = activated.get(&TagId::new(2)).unwrap();
+        assert_eq!(*tag2_activation, 1.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_division_by_zero_handled_when_max_degree_zero() -> Result<()> {
+        let db = Database::in_memory()?;
+        let conn = db.connection();
+
+        // Create tags with no edges (all have degree_centrality = 0 by default)
+        conn.execute("INSERT INTO tags (id, name) VALUES (1, 'isolated1')", [])?;
+        conn.execute("INSERT INTO tags (id, name) VALUES (2, 'isolated2')", [])?;
+
+        let mut seed_tags = HashMap::new();
+        seed_tags.insert(TagId::new(1), 1.0);
+
+        let config = SpreadingActivationConfig::default();
+
+        // Should not panic with division by zero
+        let activated = spread_activation(conn, &seed_tags, &config)?;
+
+        // Tag 1 should have activation = 1.0 (no boost when max_degree = 0)
+        let tag1_activation = activated.get(&TagId::new(1)).unwrap();
+        assert_eq!(*tag1_activation, 1.0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_centrality_boost_scales_linearly_with_relative_degree() -> Result<()> {
+        let db = setup_test_db()?;
+        let conn = db.connection();
+
+        // Create simple chain: 1 -> 2 -> 3
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (1, 2, 1.0, 'generic')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id, confidence, hierarchy_type)
+             VALUES (2, 3, 1.0, 'generic')",
+            [],
+        )?;
+
+        // Set degree centrality: tag 1 = 1, tag 2 = 2 (max), tag 3 = 1
+        conn.execute("UPDATE tags SET degree_centrality = 1 WHERE id = 1", [])?;
+        conn.execute("UPDATE tags SET degree_centrality = 2 WHERE id = 2", [])?;
+        conn.execute("UPDATE tags SET degree_centrality = 1 WHERE id = 3", [])?;
+
+        let mut seed_tags = HashMap::new();
+        seed_tags.insert(TagId::new(1), 1.0);
+        seed_tags.insert(TagId::new(2), 1.0);
+
+        let config = SpreadingActivationConfig {
+            decay_factor: 1.0,
+            threshold: 0.01,
+            max_hops: 0, // No spreading to isolate boost calculation
+        };
+
+        let activated = spread_activation(conn, &seed_tags, &config)?;
+
+        // Tag 1: boost = 1.0 + (1/2) * 0.3 = 1.15, activation = 1.0 * 1.15 = 1.15
+        // Tag 2: boost = 1.0 + (2/2) * 0.3 = 1.30, activation = 1.0 * 1.30 = 1.30
+        let tag1_activation = *activated.get(&TagId::new(1)).unwrap();
+        let tag2_activation = *activated.get(&TagId::new(2)).unwrap();
+
+        // Verify linear scaling: tag2 boost should be 1.3, tag1 boost should be 1.15
+        assert!((tag1_activation - 1.15).abs() < 0.01);
+        assert!((tag2_activation - 1.30).abs() < 0.01);
 
         Ok(())
     }

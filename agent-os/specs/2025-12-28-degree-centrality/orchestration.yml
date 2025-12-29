@@ -1,0 +1,21 @@
+task_groups:
+  - name: Schema Migration and Data Backfill
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: NoteService Edge Operations
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Spreading Activation Centrality Boost
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Tags List Output Enhancement
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
