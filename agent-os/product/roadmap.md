@@ -44,7 +44,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 21. [x] Query expansion -- Before FTS, expand query using aliases (always), broader concepts (for short queries <3 terms); aggressive noise control to prevent over-expansion; configurable expansion depth `S`
 
-22. [ ] Degree centrality -- Precompute connection count per tag/concept, update incrementally on edge changes; use for "most connected" queries, visualization node sizing, and importance signals in retrieval ranking `S`
+22. [x] Degree centrality -- Precompute connection count per tag/concept, update incrementally on edge changes; use for "most connected" queries, visualization node sizing, and importance signals in retrieval ranking `S`
 
 23. [ ] Integration tests -- Build comprehensive test suite covering happy paths for add, list, search, and auto-tagging workflows `M`
 
