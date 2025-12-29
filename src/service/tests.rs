@@ -4000,12 +4000,14 @@ fn dual_search_result_struct_instantiation() {
         skip_reason: None,
         fts_result_count: 5,
         graph_result_count: 3,
+        expanded_fts_query: "\"test\"".to_string(),
     };
 
     assert!(!metadata.graph_skipped);
     assert!(metadata.skip_reason.is_none());
     assert_eq!(metadata.fts_result_count, 5);
     assert_eq!(metadata.graph_result_count, 3);
+    assert_eq!(metadata.expanded_fts_query, "\"test\"");
 
     // Test with graph skipped
     let metadata_skipped = DualSearchMetadata {
@@ -4013,6 +4015,7 @@ fn dual_search_result_struct_instantiation() {
         skip_reason: Some("sparse graph activation".to_string()),
         fts_result_count: 10,
         graph_result_count: 0,
+        expanded_fts_query: "\"rust\" OR \"rustlang\"".to_string(),
     };
 
     assert!(metadata_skipped.graph_skipped);
@@ -4022,6 +4025,7 @@ fn dual_search_result_struct_instantiation() {
     );
     assert_eq!(metadata_skipped.fts_result_count, 10);
     assert_eq!(metadata_skipped.graph_result_count, 0);
+    assert_eq!(metadata_skipped.expanded_fts_query, "\"rust\" OR \"rustlang\"");
 }
 
 // --- Dual Search Tests (Task Group 2) ---

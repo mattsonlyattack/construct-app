@@ -220,6 +220,8 @@ pub struct DualSearchMetadata {
     pub fts_result_count: usize,
     /// Number of results returned by graph channel.
     pub graph_result_count: usize,
+    /// The expanded FTS query showing alias and broader concept expansion.
+    pub expanded_fts_query: String,
 }
 
 /// Determines whether broader concept expansion should be applied for a query.
@@ -1502,6 +1504,20 @@ impl NoteService {
     /// # }
     /// ```
     pub fn search_notes(&self, query: &str, limit: Option<usize>) -> Result<Vec<SearchResult>> {
+        let fts_query = self.build_fts_query(query)?;
+        self.execute_fts_search(&fts_query, limit)
+    }
+
+    /// Builds the expanded FTS query string for a search query.
+    ///
+    /// This method handles alias expansion (always) and broader concept expansion
+    /// (for queries with fewer than 3 terms). The returned string can be used
+    /// directly with FTS5 MATCH queries.
+    ///
+    /// # Returns
+    ///
+    /// The expanded FTS query string, e.g., `("rust" OR "rustlang" OR "programming")`.
+    pub fn build_fts_query(&self, query: &str) -> Result<String> {
         // Validate query is not empty or whitespace-only
         let trimmed_query = query.trim();
         if trimmed_query.is_empty() {
@@ -1534,8 +1550,11 @@ impl NoteService {
 
         // Join with explicit AND for FTS5 when using parenthesized OR groups
         // FTS5 syntax requires explicit AND between parenthesized groups
-        let fts_query = expanded_terms?.join(" AND ");
+        Ok(expanded_terms?.join(" AND "))
+    }
 
+    /// Executes an FTS5 search with the given pre-built query string.
+    fn execute_fts_search(&self, fts_query: &str, limit: Option<usize>) -> Result<Vec<SearchResult>> {
         let conn = self.db.connection();
 
         // Query FTS5 table with BM25 ranking, also selecting the score
@@ -1557,7 +1576,7 @@ impl NoteService {
 
         let mut stmt = conn.prepare(&query_sql)?;
         let rows: Vec<(i64, f64)> = stmt
-            .query_map([&fts_query], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([fts_query], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<(i64, f64)>, _>>()?;
 
         // Load full Note objects and construct SearchResults with normalized scores
@@ -2382,6 +2401,9 @@ impl NoteService {
         // Load configuration from environment
         let config = DualSearchConfig::from_env();
 
+        // Build and capture the expanded FTS query for metadata
+        let expanded_fts_query = self.build_fts_query(query)?;
+
         // Execute both search channels
         let fts_results = self.search_notes(query, None)?;
         let graph_results = self.graph_search(query, None)?;
@@ -2432,6 +2454,7 @@ impl NoteService {
                 skip_reason: Some("sparse graph activation".to_string()),
                 fts_result_count,
                 graph_result_count: 0,
+                expanded_fts_query: expanded_fts_query.clone(),
             };
 
             return Ok((fts_only_results, metadata));
@@ -2503,6 +2526,7 @@ impl NoteService {
             skip_reason: None,
             fts_result_count,
             graph_result_count,
+            expanded_fts_query,
         };
 
         Ok((results, metadata))

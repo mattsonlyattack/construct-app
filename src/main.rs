@@ -594,10 +594,19 @@ fn execute_search(query: &str, limit: Option<usize>, service: NoteService) -> Re
         println!(); // Blank line separator
     }
 
-    // Display graph skip notice if graph channel was skipped
-    if metadata.graph_skipped {
-        println!("Note: Graph search skipped (sparse activation)");
-    }
+    // Display search metadata
+    println!("---");
+    println!("Query expansion: {}", metadata.expanded_fts_query);
+    println!(
+        "Results: {} from FTS, {} from graph{}",
+        metadata.fts_result_count,
+        metadata.graph_result_count,
+        if metadata.graph_skipped {
+            " (graph skipped: sparse activation)"
+        } else {
+            ""
+        }
+    );
 
     Ok(())
 }
