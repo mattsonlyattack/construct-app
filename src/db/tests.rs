@@ -2164,3 +2164,308 @@ fn edges_schema_integration_with_existing_tables() {
         "note_tags table should still function correctly"
     );
 }
+
+// ========== Degree Centrality Tests ==========
+
+#[test]
+fn tags_has_degree_centrality_column() {
+    let db = Database::in_memory().unwrap();
+
+    // Query table schema to check degree_centrality column exists
+    let mut stmt = db.connection().prepare("PRAGMA table_info(tags)").unwrap();
+
+    let columns: Vec<(String, String)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?, // name
+                row.get::<_, String>(2)?, // type
+            ))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // Check degree_centrality column exists and is INTEGER
+    let degree_centrality_column = columns
+        .iter()
+        .find(|(name, _)| name == "degree_centrality")
+        .expect("degree_centrality column should exist");
+
+    assert_eq!(degree_centrality_column.1, "INTEGER");
+
+    // Verify default value by inserting a tag without specifying degree_centrality
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (1, 'test-tag')", [])
+        .unwrap();
+
+    let degree_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(
+        degree_centrality, 0,
+        "Default degree_centrality should be 0"
+    );
+}
+
+#[test]
+fn degree_centrality_backfill_counts_existing_edges() {
+    let db = Database::in_memory().unwrap();
+
+    // Insert tags
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (1, 'rust')", [])
+        .unwrap();
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (2, 'programming')", [])
+        .unwrap();
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (3, 'systems')", [])
+        .unwrap();
+
+    // Insert edges
+    // Tag 1 (rust) -> Tag 2 (programming): 1 edge for tag 1, 1 edge for tag 2
+    db.connection()
+        .execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id) VALUES (1, 2)",
+            [],
+        )
+        .unwrap();
+
+    // Tag 1 (rust) -> Tag 3 (systems): 2 edges for tag 1, 1 edge for tag 3
+    db.connection()
+        .execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id) VALUES (1, 3)",
+            [],
+        )
+        .unwrap();
+
+    // Tag 2 (programming) -> Tag 3 (systems): 2 edges for tag 2, 2 edges for tag 3
+    db.connection()
+        .execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id) VALUES (2, 3)",
+            [],
+        )
+        .unwrap();
+
+    // Manually trigger backfill (same query as in initialize_schema)
+    db.connection()
+        .execute(
+            "UPDATE tags SET degree_centrality = (
+                SELECT COUNT(*) FROM edges
+                WHERE source_tag_id = tags.id OR target_tag_id = tags.id
+            )",
+            [],
+        )
+        .unwrap();
+
+    // Verify counts
+    let tag1_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tag1_centrality, 2, "Tag 1 (rust) should have 2 connections");
+
+    let tag2_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        tag2_centrality, 2,
+        "Tag 2 (programming) should have 2 connections"
+    );
+
+    let tag3_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 3",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        tag3_centrality, 2,
+        "Tag 3 (systems) should have 2 connections"
+    );
+}
+
+#[test]
+fn degree_centrality_zero_for_tags_without_edges() {
+    let db = Database::in_memory().unwrap();
+
+    // Insert tags
+    db.connection()
+        .execute(
+            "INSERT INTO tags (id, name) VALUES (1, 'connected-tag')",
+            [],
+        )
+        .unwrap();
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (2, 'isolated-tag')", [])
+        .unwrap();
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (3, 'another-tag')", [])
+        .unwrap();
+
+    // Insert one edge connecting tags 1 and 3 (tag 2 remains isolated)
+    db.connection()
+        .execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id) VALUES (1, 3)",
+            [],
+        )
+        .unwrap();
+
+    // Manually trigger backfill
+    db.connection()
+        .execute(
+            "UPDATE tags SET degree_centrality = (
+                SELECT COUNT(*) FROM edges
+                WHERE source_tag_id = tags.id OR target_tag_id = tags.id
+            )",
+            [],
+        )
+        .unwrap();
+
+    // Verify isolated tag has zero centrality
+    let isolated_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        isolated_centrality, 0,
+        "Isolated tag should have 0 connections"
+    );
+
+    // Verify connected tags have non-zero centrality
+    let tag1_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tag1_centrality, 1, "Tag 1 should have 1 connection");
+
+    let tag3_centrality: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 3",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tag3_centrality, 1, "Tag 3 should have 1 connection");
+}
+
+#[test]
+fn degree_centrality_backfill_idempotent() {
+    let db = Database::in_memory().unwrap();
+
+    // Insert tags
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (1, 'tag-a')", [])
+        .unwrap();
+    db.connection()
+        .execute("INSERT INTO tags (id, name) VALUES (2, 'tag-b')", [])
+        .unwrap();
+
+    // Insert edge
+    db.connection()
+        .execute(
+            "INSERT INTO edges (source_tag_id, target_tag_id) VALUES (1, 2)",
+            [],
+        )
+        .unwrap();
+
+    // Run backfill first time
+    db.connection()
+        .execute(
+            "UPDATE tags SET degree_centrality = (
+                SELECT COUNT(*) FROM edges
+                WHERE source_tag_id = tags.id OR target_tag_id = tags.id
+            )",
+            [],
+        )
+        .unwrap();
+
+    // Get centrality values after first backfill
+    let tag1_first: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let tag2_first: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    // Run backfill second time (idempotent test)
+    db.connection()
+        .execute(
+            "UPDATE tags SET degree_centrality = (
+                SELECT COUNT(*) FROM edges
+                WHERE source_tag_id = tags.id OR target_tag_id = tags.id
+            )",
+            [],
+        )
+        .unwrap();
+
+    // Get centrality values after second backfill
+    let tag1_second: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let tag2_second: i32 = db
+        .connection()
+        .query_row(
+            "SELECT degree_centrality FROM tags WHERE id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    // Verify values remain the same after re-running backfill
+    assert_eq!(
+        tag1_first, tag1_second,
+        "Tag 1 centrality should remain {} after re-run",
+        tag1_first
+    );
+    assert_eq!(
+        tag2_first, tag2_second,
+        "Tag 2 centrality should remain {} after re-run",
+        tag2_first
+    );
+
+    // Verify values are correct (both should be 1)
+    assert_eq!(tag1_first, 1, "Tag 1 should have 1 connection");
+    assert_eq!(tag2_first, 1, "Tag 2 should have 1 connection");
+}

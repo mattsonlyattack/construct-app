@@ -30,6 +30,8 @@ enum Commands {
     Search(SearchCommand),
     /// Search notes using graph-based spreading activation
     GraphSearch(GraphSearchCommand),
+    /// Manage tags
+    Tags(TagsCommand),
     /// Manage tag aliases
     TagAlias(TagAliasCommand),
     /// Manage tag hierarchy
@@ -82,6 +84,20 @@ struct GraphSearchCommand {
     /// Maximum number of results to display (default: 10)
     #[arg(short, long, value_name = "LIMIT")]
     limit: Option<usize>,
+}
+
+/// Manage tags
+#[derive(Parser)]
+struct TagsCommand {
+    #[command(subcommand)]
+    command: TagsCommands,
+}
+
+/// Tag subcommands
+#[derive(Subcommand)]
+enum TagsCommands {
+    /// List all tags with statistics
+    List,
 }
 
 /// Manage tag aliases
@@ -140,6 +156,7 @@ fn main() {
         Commands::List(cmd) => handle_list(cmd),
         Commands::Search(cmd) => handle_search(cmd),
         Commands::GraphSearch(cmd) => handle_graph_search(cmd),
+        Commands::Tags(cmd) => handle_tags(cmd),
         Commands::TagAlias(cmd) => handle_tag_alias(cmd),
         Commands::Hierarchy(cmd) => handle_hierarchy(cmd),
     };
@@ -747,6 +764,55 @@ fn get_tag_names(db: &Database, tag_assignments: &[cons::TagAssignment]) -> Resu
     }
 
     Ok(names)
+}
+
+/// Handles the tags command by dispatching to subcommand handlers.
+fn handle_tags(cmd: &TagsCommand) -> Result<()> {
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+
+    match &cmd.command {
+        TagsCommands::List => execute_tags_list(db),
+    }
+}
+
+/// Executes the tags list command logic with a provided database.
+///
+/// This function is separated from `handle_tags` to allow testing with in-memory databases.
+fn execute_tags_list(db: Database) -> Result<()> {
+    let service = NoteService::new(db);
+
+    // Fetch all tags with statistics
+    let tags = service
+        .get_tags_with_stats()
+        .context("Failed to get tags with stats")?;
+
+    if tags.is_empty() {
+        println!("No tags found");
+        return Ok(());
+    }
+
+    // Display each tag with statistics
+    for (_, name, note_count, degree_centrality) in &tags {
+        // Handle pluralization
+        let note_word = if *note_count == 1 { "note" } else { "notes" };
+        let connection_word = if *degree_centrality == 1 {
+            "connection"
+        } else {
+            "connections"
+        };
+
+        println!(
+            "{} ({} {}, {} {})",
+            name, note_count, note_word, degree_centrality, connection_word
+        );
+    }
+
+    Ok(())
 }
 
 /// Handles the tag-alias command by dispatching to subcommand handlers.
@@ -2329,5 +2395,114 @@ mod tests {
         let result = execute_graph_search("test", Some(3), service);
         assert!(result.is_ok());
         // The limit is applied at the service layer, verified by service tests
+    }
+
+    // --- Tags List CLI Command Tests (Task Group 4) ---
+
+    #[test]
+    fn tags_list_command_struct_parsing_with_clap() {
+        use clap::CommandFactory;
+
+        // Test parsing of `cons tags list`
+        let matches = Cli::command()
+            .try_get_matches_from(vec!["cons", "tags", "list"])
+            .expect("failed to parse tags list command");
+
+        // Verify command is recognized
+        assert!(matches.subcommand_matches("tags").is_some());
+    }
+
+    #[test]
+    fn execute_tags_list_shows_degree_centrality() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with tags
+        service
+            .create_note("Rust note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Programming note", Some(&["programming"]))
+            .expect("failed to create note");
+
+        // Get tags with stats to verify degree centrality is included
+        let tags = service
+            .get_tags_with_stats()
+            .expect("failed to get tags with stats");
+
+        // Verify we have 2 tags with degree centrality
+        assert_eq!(tags.len(), 2);
+
+        // Verify all tags have degree_centrality (should be 0 since no edges created yet)
+        for (_, _, _, degree_centrality) in &tags {
+            assert_eq!(*degree_centrality, 0);
+        }
+
+        // Test the execute_tags_list function with a new database
+        let db2 = Database::in_memory().expect("failed to create in-memory database");
+        let service2 = NoteService::new(db2);
+        service2
+            .create_note("Test note", Some(&["test"]))
+            .expect("failed to create note");
+
+        let tags2 = service2
+            .get_tags_with_stats()
+            .expect("failed to get tags with stats");
+        assert_eq!(tags2.len(), 1);
+        let (_, name, note_count, degree_centrality) = &tags2[0];
+        assert_eq!(name, "test");
+        assert_eq!(*note_count, 1);
+        assert_eq!(*degree_centrality, 0);
+    }
+
+    #[test]
+    fn execute_tags_list_with_empty_database_shows_no_tags_found() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+
+        // Execute tags list in empty database
+        let result = execute_tags_list(db);
+        assert!(result.is_ok());
+        // Should complete successfully and print "No tags found"
+    }
+
+    #[test]
+    fn execute_tags_list_output_format_includes_note_count_and_connections() {
+        let db = Database::in_memory().expect("failed to create in-memory database");
+        let service = NoteService::new(db);
+
+        // Create notes with tags
+        service
+            .create_note("First rust note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Second rust note", Some(&["rust"]))
+            .expect("failed to create note");
+        service
+            .create_note("Python note", Some(&["python"]))
+            .expect("failed to create note");
+
+        // Get tags with stats to verify the service method works correctly
+        let tags = service
+            .get_tags_with_stats()
+            .expect("failed to get tags with stats");
+
+        // Verify we have 2 tags
+        assert_eq!(tags.len(), 2);
+
+        // Find the rust tag
+        let rust_tag = tags.iter().find(|(_, name, _, _)| name == "rust");
+        assert!(rust_tag.is_some());
+        let (_, name, note_count, degree_centrality) = rust_tag.unwrap();
+        assert_eq!(name, "rust");
+        assert_eq!(*note_count, 2);
+        assert_eq!(*degree_centrality, 0); // No edges created yet
+
+        // Find the python tag
+        let python_tag = tags.iter().find(|(_, name, _, _)| name == "python");
+        assert!(python_tag.is_some());
+        let (_, name, note_count, degree_centrality) = python_tag.unwrap();
+        assert_eq!(name, "python");
+        assert_eq!(*note_count, 1);
+        assert_eq!(*degree_centrality, 0); // No edges created yet
     }
 }

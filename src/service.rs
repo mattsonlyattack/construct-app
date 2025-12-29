@@ -1720,6 +1720,66 @@ impl NoteService {
         Ok(tags)
     }
 
+    /// Gets all tags with their statistics including note count and degree centrality.
+    ///
+    /// Queries tags that have at least one associated note, returning the tag ID,
+    /// name, count of associated notes, and degree centrality (number of edges).
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of tuples containing (TagId, tag name, note count, degree centrality)
+    /// for each tag with associated notes, ordered by tag name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create notes with tags
+    /// service.create_note("Rust note", Some(&["rust"]))?;
+    /// service.create_note("Another rust note", Some(&["rust"]))?;
+    ///
+    /// // Get tags with statistics
+    /// let tags = service.get_tags_with_stats()?;
+    /// assert_eq!(tags.len(), 1);
+    /// let (tag_id, name, note_count, centrality) = &tags[0];
+    /// assert_eq!(name, "rust");
+    /// assert_eq!(*note_count, 2);
+    /// assert_eq!(*centrality, 0); // No edges created yet
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_tags_with_stats(&self) -> Result<Vec<(TagId, String, i64, i64)>> {
+        let conn = self.db.connection();
+
+        let mut stmt = conn.prepare(
+            "SELECT t.id, t.name, COUNT(DISTINCT nt.note_id) as note_count, COALESCE(t.degree_centrality, 0) as centrality
+             FROM tags t
+             JOIN note_tags nt ON t.id = nt.tag_id
+             GROUP BY t.id, t.name, t.degree_centrality
+             ORDER BY t.name",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            let note_count: i64 = row.get(2)?;
+            let centrality: i64 = row.get(3)?;
+            Ok((TagId::new(id), name, note_count, centrality))
+        })?;
+
+        let mut tags = Vec::new();
+        for row_result in rows {
+            tags.push(row_result?);
+        }
+
+        Ok(tags)
+    }
+
     /// Creates an edge between two tags in the hierarchy.
     ///
     /// Inserts a directed edge from source_tag_id (narrower/child concept) to
@@ -1758,16 +1818,20 @@ impl NoteService {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn create_edge(
+    /// Internal helper to create an edge without managing transactions.
+    ///
+    /// This method is used internally by both create_edge() and create_edges_batch()
+    /// to avoid nested transactions. The caller is responsible for transaction management.
+    fn create_edge_internal(
         &self,
         source_tag_id: TagId,
         target_tag_id: TagId,
         confidence: f64,
         hierarchy_type: &str,
         model_version: Option<&str>,
+        now: i64,
     ) -> Result<()> {
         let conn = self.db.connection();
-        let now = OffsetDateTime::now_utc().unix_timestamp();
 
         // Validate both tag IDs exist
         let source_exists: bool = conn.query_row(
@@ -1820,7 +1884,53 @@ impl NoteService {
             ],
         )?;
 
+        // Increment degree_centrality for both tags
+        conn.execute(
+            "UPDATE tags SET degree_centrality = degree_centrality + 1 WHERE id = ?",
+            [source_tag_id.get()],
+        )?;
+
+        conn.execute(
+            "UPDATE tags SET degree_centrality = degree_centrality + 1 WHERE id = ?",
+            [target_tag_id.get()],
+        )?;
+
         Ok(())
+    }
+
+    pub fn create_edge(
+        &self,
+        source_tag_id: TagId,
+        target_tag_id: TagId,
+        confidence: f64,
+        hierarchy_type: &str,
+        model_version: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.db.connection();
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+
+        // Use a transaction for atomicity (edge insert + centrality updates)
+        conn.execute("BEGIN TRANSACTION", [])?;
+
+        let result = self.create_edge_internal(
+            source_tag_id,
+            target_tag_id,
+            confidence,
+            hierarchy_type,
+            model_version,
+            now,
+        );
+
+        match result {
+            Ok(()) => {
+                conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                conn.execute("ROLLBACK", []).ok();
+                Err(e)
+            }
+        }
     }
 
     /// Creates multiple edges atomically in a single transaction.
@@ -1872,14 +1982,16 @@ impl NoteService {
 
         let result: Result<usize> = (|| {
             let mut count = 0;
+            let now = OffsetDateTime::now_utc().unix_timestamp();
 
             for (source_tag_id, target_tag_id, confidence, hierarchy_type, model_version) in edges {
-                self.create_edge(
+                self.create_edge_internal(
                     *source_tag_id,
                     *target_tag_id,
                     *confidence,
                     hierarchy_type,
                     *model_version,
+                    now,
                 )?;
                 count += 1;
             }
@@ -2026,6 +2138,95 @@ impl NoteService {
         }
 
         Ok(broader_concepts)
+    }
+
+    /// Deletes an edge between two tags in the hierarchy.
+    ///
+    /// Removes the directed edge from source_tag_id to target_tag_id and decrements
+    /// the degree_centrality for both tags. Uses a transaction to ensure atomicity.
+    /// This operation is idempotent - deleting a non-existent edge succeeds without error.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_tag_id` - The source tag of the edge to delete
+    /// * `target_tag_id` - The target tag of the edge to delete
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tags and edge
+    /// let tag1 = service.get_or_create_tag("tag1")?;
+    /// let tag2 = service.get_or_create_tag("tag2")?;
+    /// service.create_edge(tag1, tag2, 0.9, "generic", Some("test-model"))?;
+    ///
+    /// // Delete the edge
+    /// service.delete_edge(tag1, tag2)?;
+    ///
+    /// // Deleting again is idempotent (no error)
+    /// service.delete_edge(tag1, tag2)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn delete_edge(&self, source_tag_id: TagId, target_tag_id: TagId) -> Result<()> {
+        let conn = self.db.connection();
+
+        // Use a transaction for atomicity (edge delete + centrality updates)
+        conn.execute("BEGIN TRANSACTION", [])?;
+
+        let result: Result<()> = (|| {
+            // Check if edge exists before attempting delete
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM edges
+                 WHERE source_tag_id = ?1 AND target_tag_id = ?2
+                   AND valid_from IS NULL AND valid_until IS NULL)",
+                [source_tag_id.get(), target_tag_id.get()],
+                |row| row.get(0),
+            )?;
+
+            if !exists {
+                // Edge doesn't exist, this is a no-op (idempotent)
+                return Ok(());
+            }
+
+            // Delete the edge
+            conn.execute(
+                "DELETE FROM edges
+                 WHERE source_tag_id = ?1 AND target_tag_id = ?2
+                   AND valid_from IS NULL AND valid_until IS NULL",
+                [source_tag_id.get(), target_tag_id.get()],
+            )?;
+
+            // Decrement degree_centrality for both tags, but ensure it never goes negative
+            // Use MAX(0, degree_centrality - 1) to prevent negative values
+            conn.execute(
+                "UPDATE tags SET degree_centrality = MAX(0, degree_centrality - 1) WHERE id = ?",
+                [source_tag_id.get()],
+            )?;
+
+            conn.execute(
+                "UPDATE tags SET degree_centrality = MAX(0, degree_centrality - 1) WHERE id = ?",
+                [target_tag_id.get()],
+            )?;
+
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                conn.execute("ROLLBACK", []).ok();
+                Err(e)
+            }
+        }
     }
 
     /// Searches for notes using spreading activation through the tag hierarchy graph.

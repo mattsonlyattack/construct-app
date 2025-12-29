@@ -95,6 +95,10 @@ ALTER TABLE notes ADD COLUMN content_enhanced TEXT;
 ALTER TABLE notes ADD COLUMN enhanced_at INTEGER;
 ALTER TABLE notes ADD COLUMN enhancement_model TEXT;
 ALTER TABLE notes ADD COLUMN enhancement_confidence REAL;
+
+-- Add degree centrality tracking to tags table
+-- Stores the total number of edges connected to this tag (incoming + outgoing)
+ALTER TABLE tags ADD COLUMN degree_centrality INTEGER DEFAULT 0;
 "#;
 
 /// FTS5 virtual table creation SQL.
