@@ -1,0 +1,25 @@
+task_groups:
+  - name: Query Expansion Configuration
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Broader Concept Retrieval
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Term Expansion with Broader Concepts
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Enhanced FTS Query Building
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Search Method Integration
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all

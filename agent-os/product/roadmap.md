@@ -42,7 +42,7 @@ Always consider how the roadmap should support @KNOWLEDGE.md
 
 20. [x] Dual-channel search -- Combine FTS5 results with spreading activation using intersection boost (1.5x multiplier for notes found by both channels); graceful degradation to FTS-only when graph density below threshold (cold-start handling) `M`
 
-21. [ ] Query expansion -- Before FTS, expand query using aliases (always), broader concepts (for short queries <3 terms); aggressive noise control to prevent over-expansion; configurable expansion depth `S`
+21. [x] Query expansion -- Before FTS, expand query using aliases (always), broader concepts (for short queries <3 terms); aggressive noise control to prevent over-expansion; configurable expansion depth `S`
 
 22. [ ] Degree centrality -- Precompute connection count per tag/concept, update incrementally on edge changes; use for "most connected" queries, visualization node sizing, and importance signals in retrieval ranking `S`
 

@@ -124,6 +124,72 @@ impl DualSearchConfig {
     }
 }
 
+/// Configuration for query expansion with broader concepts.
+///
+/// Parsed from environment variables at method call time with fallback defaults.
+#[derive(Debug, Clone)]
+pub struct QueryExpansionConfig {
+    /// Maximum depth for broader concept traversal (default 1).
+    pub expansion_depth: usize,
+    /// Maximum number of expanded terms per original term (default 10).
+    pub max_expansion_terms: usize,
+    /// Minimum confidence threshold for including broader concepts (default 0.7).
+    pub broader_min_confidence: f64,
+}
+
+impl Default for QueryExpansionConfig {
+    fn default() -> Self {
+        Self {
+            expansion_depth: 1,
+            max_expansion_terms: 10,
+            broader_min_confidence: 0.7,
+        }
+    }
+}
+
+impl QueryExpansionConfig {
+    /// Parses configuration from environment variables.
+    ///
+    /// Falls back to defaults when env vars not set or invalid.
+    ///
+    /// # Environment Variables
+    ///
+    /// - `CONS_EXPANSION_DEPTH` (usize, default 1): Maximum depth for broader concept traversal
+    /// - `CONS_MAX_EXPANSION_TERMS` (usize, default 10): Maximum expanded terms per original term
+    /// - `CONS_BROADER_MIN_CONFIDENCE` (f64, default 0.7): Minimum confidence for broader concepts
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::service::QueryExpansionConfig;
+    ///
+    /// let config = QueryExpansionConfig::from_env();
+    /// assert_eq!(config.expansion_depth, 1); // default when env var not set
+    /// ```
+    pub fn from_env() -> Self {
+        let expansion_depth = std::env::var("CONS_EXPANSION_DEPTH")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+
+        let max_expansion_terms = std::env::var("CONS_MAX_EXPANSION_TERMS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10);
+
+        let broader_min_confidence = std::env::var("CONS_BROADER_MIN_CONFIDENCE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.7);
+
+        Self {
+            expansion_depth,
+            max_expansion_terms,
+            broader_min_confidence,
+        }
+    }
+}
+
 /// Search result for dual-channel retrieval combining FTS and graph scores.
 ///
 /// Contains a note with scores from both search channels and a combined final score.
@@ -154,6 +220,29 @@ pub struct DualSearchMetadata {
     pub fts_result_count: usize,
     /// Number of results returned by graph channel.
     pub graph_result_count: usize,
+}
+
+/// Determines whether broader concept expansion should be applied for a query.
+///
+/// Returns `true` if the query has fewer than 3 whitespace-separated terms,
+/// `false` otherwise. This prevents over-expansion for longer, more specific queries.
+///
+/// # Arguments
+///
+/// * `query` - The search query string to analyze
+///
+/// # Examples
+///
+/// ```
+/// use cons::service::should_expand_broader;
+///
+/// assert!(should_expand_broader("rust"));
+/// assert!(should_expand_broader("rust programming"));
+/// assert!(!should_expand_broader("rust programming language"));
+/// ```
+pub fn should_expand_broader(query: &str) -> bool {
+    let term_count = query.split_whitespace().count();
+    term_count < 3
 }
 
 /// Service layer providing note management operations.
@@ -1157,12 +1246,176 @@ impl NoteService {
         Ok(expansions.into_iter().collect())
     }
 
-    /// Builds an FTS5 query fragment with alias expansion for a single term.
+    /// Expands a search term with both alias expansion and broader concept expansion.
     ///
-    /// Expands the term using `expand_search_term()` and formats the result
-    /// as an FTS5 OR expression with proper quoting:
+    /// Performs expansion in two stages:
+    /// 1. Alias expansion (always applied) using `expand_search_term()`
+    /// 2. Broader concept expansion (conditional) using tag hierarchy
+    ///
+    /// Broader concept expansion adds parent concepts from the tag hierarchy,
+    /// filtered by confidence threshold and limited by max_expansion_terms.
+    /// When the limit is exceeded, aliases are preferred over broader concepts.
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The search term to expand
+    /// * `config` - Query expansion configuration (thresholds and limits)
+    ///
+    /// # Returns
+    ///
+    /// A vector of unique expansion terms including the original term, aliases,
+    /// and broader concepts (up to max_expansion_terms).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService, service::QueryExpansionConfig};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tag hierarchy
+    /// let rust = service.get_or_create_tag("rust")?;
+    /// let programming = service.get_or_create_tag("programming")?;
+    /// service.create_edge(rust, programming, 0.9, "generic", Some("test"))?;
+    ///
+    /// // Expand with broader concepts
+    /// let config = QueryExpansionConfig::default();
+    /// let expanded = service.expand_search_term_with_broader("rust", &config)?;
+    /// assert!(expanded.contains(&"rust".to_string()));
+    /// assert!(expanded.contains(&"programming".to_string()));
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn expand_search_term_with_broader(
+        &self,
+        term: &str,
+        config: &QueryExpansionConfig,
+    ) -> Result<Vec<String>> {
+        use std::collections::HashSet;
+
+        // Stage 1: Alias expansion (always applied)
+        let alias_expansions = self.expand_search_term(term)?;
+
+        // Convert to HashSet for deduplication
+        let mut expansions: HashSet<String> = alias_expansions.into_iter().collect();
+
+        // Stage 2: Broader concept expansion (conditional based on caller)
+        // Look up TagId for the normalized term
+        let normalized = TagNormalizer::normalize_tag(term);
+        let conn = self.db.connection();
+
+        // First check if term is an alias and get canonical tag
+        let tag_id: Option<i64> = if let Some(canonical_id) = self.resolve_alias(&normalized)? {
+            Some(canonical_id.get())
+        } else {
+            // Not an alias, try direct tag lookup
+            conn.query_row(
+                "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+                [&normalized],
+                |row| row.get(0),
+            )
+            .optional()?
+        };
+
+        // If we found a TagId, get broader concepts
+        if let Some(id) = tag_id {
+            let broader_concept_names =
+                self.get_broader_concept_names(TagId::new(id), config.broader_min_confidence)?;
+
+            // Add broader concept names to expansions
+            for (_, name) in broader_concept_names {
+                expansions.insert(name);
+            }
+        }
+
+        // Stage 3: Apply term limit, preferring aliases over broader concepts
+        let mut final_expansions: Vec<String> = expansions.into_iter().collect();
+
+        if final_expansions.len() > config.max_expansion_terms {
+            // We need to prioritize: original term + aliases > broader concepts
+            // First, identify which terms are from alias expansion
+            let original_alias_expansions = self.expand_search_term(term)?;
+            let alias_set: HashSet<String> = original_alias_expansions.into_iter().collect();
+
+            // Separate into aliases and broader concepts
+            let mut aliases: Vec<String> = Vec::new();
+            let mut broader: Vec<String> = Vec::new();
+
+            for expansion in final_expansions {
+                if alias_set.contains(&expansion) {
+                    aliases.push(expansion);
+                } else {
+                    broader.push(expansion);
+                }
+            }
+
+            // Take all aliases first, then fill remaining slots with broader concepts
+            final_expansions = aliases;
+            let remaining_slots = config
+                .max_expansion_terms
+                .saturating_sub(final_expansions.len());
+
+            if remaining_slots > 0 {
+                broader.truncate(remaining_slots);
+                final_expansions.extend(broader);
+            }
+        }
+
+        Ok(final_expansions)
+    }
+
+    /// Builds an FTS5 query fragment with alias and broader concept expansion.
+    ///
+    /// Expands the term using `expand_search_term_with_broader()` and formats
+    /// the result as an FTS5 OR expression with proper quoting:
     /// - All terms are quoted for exact matching
     /// - Multi-word aliases use phrase matching
+    /// - Broader concepts included when query length permits
+    ///
+    /// # Arguments
+    ///
+    /// * `term` - The search term to expand and format
+    /// * `config` - Query expansion configuration for broader concepts
+    ///
+    /// # Returns
+    ///
+    /// An FTS5 query fragment. For single term: `"term"`.
+    /// For multiple expansions with OR: `("rust" OR "rustlang" OR "programming")`.
+    fn build_expanded_fts_term_with_config(
+        &self,
+        term: &str,
+        config: &QueryExpansionConfig,
+    ) -> Result<String> {
+        let expansions = self.expand_search_term_with_broader(term, config)?;
+
+        if expansions.len() == 1 {
+            // Single term - just escape and quote it
+            let escaped = expansions[0].replace('"', "\"\"");
+            return Ok(format!("\"{}\"", escaped));
+        }
+
+        // Multiple expansions - build OR group with proper FTS5 syntax
+        // FTS5 requires: ("term1" OR "term2" OR "term3")
+        let formatted_terms: Vec<String> = expansions
+            .iter()
+            .map(|expansion| {
+                // Escape quotes and wrap in quotes
+                let escaped = expansion.replace('"', "\"\"");
+                format!("\"{}\"", escaped)
+            })
+            .collect();
+
+        // Use parentheses for grouping OR expressions in FTS5
+        Ok(format!("({})", formatted_terms.join(" OR ")))
+    }
+
+    /// Builds an FTS5 query fragment with alias expansion for a single term.
+    ///
+    /// This is a convenience method that uses default configuration.
+    /// For backward compatibility, this method only performs alias expansion
+    /// without broader concept expansion.
     ///
     /// # Arguments
     ///
@@ -1255,14 +1508,28 @@ impl NoteService {
             anyhow::bail!("Search query cannot be empty");
         }
 
+        // Load query expansion configuration from environment
+        let config = QueryExpansionConfig::from_env();
+
         // Split query into terms and expand each with alias expansion
         let terms: Vec<&str> = trimmed_query.split_whitespace().collect();
 
-        // Build FTS5 query with alias expansion for each term
+        // Check if we should apply broader concept expansion (< 3 terms)
+        let should_expand = should_expand_broader(trimmed_query);
+
+        // Build FTS5 query with expansion for each term
         // AND logic between original query terms, OR within expansions
         let expanded_terms: Result<Vec<String>> = terms
             .iter()
-            .map(|term| self.build_expanded_fts_term(term))
+            .map(|term| {
+                if should_expand {
+                    // Apply broader concept expansion
+                    self.build_expanded_fts_term_with_config(term, &config)
+                } else {
+                    // Only apply alias expansion for queries with 3+ terms
+                    self.build_expanded_fts_term(term)
+                }
+            })
             .collect();
 
         // Join with explicit AND for FTS5 when using parenthesized OR groups
@@ -1611,6 +1878,135 @@ impl NoteService {
                 Err(e)
             }
         }
+    }
+
+    /// Retrieves broader concepts for a given tag by traversing generic hierarchy edges.
+    ///
+    /// Queries the edges table for targets of generic (is-a) edges originating from
+    /// the specified tag, filtered by minimum confidence threshold. Only traverses
+    /// generic hierarchy type edges (not partitive).
+    ///
+    /// Edge direction: source_tag_id (narrower) -> target_tag_id (broader)
+    ///
+    /// # Arguments
+    ///
+    /// * `tag_id` - The tag to find broader concepts for
+    /// * `min_confidence` - Minimum confidence threshold (0.0-1.0) for edges
+    ///
+    /// # Returns
+    ///
+    /// Returns `Vec<TagId>` of broader concept tag IDs, ordered by confidence descending.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tag hierarchy
+    /// let rust = service.get_or_create_tag("rust")?;
+    /// let programming = service.get_or_create_tag("programming")?;
+    /// service.create_edge(rust, programming, 0.9, "generic", Some("test"))?;
+    ///
+    /// // Get broader concepts
+    /// let broader = service.get_broader_concepts(rust, 0.7)?;
+    /// assert_eq!(broader.len(), 1);
+    /// assert_eq!(broader[0], programming);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_broader_concepts(&self, tag_id: TagId, min_confidence: f64) -> Result<Vec<TagId>> {
+        let conn = self.db.connection();
+
+        let mut stmt = conn.prepare(
+            "SELECT target_tag_id FROM edges
+             WHERE source_tag_id = ?1
+               AND hierarchy_type = 'generic'
+               AND confidence >= ?2
+             ORDER BY confidence DESC",
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![tag_id.get(), min_confidence], |row| {
+            let target_id: i64 = row.get(0)?;
+            Ok(TagId::new(target_id))
+        })?;
+
+        let mut broader_concepts = Vec::new();
+        for row_result in rows {
+            broader_concepts.push(row_result?);
+        }
+
+        Ok(broader_concepts)
+    }
+
+    /// Retrieves broader concepts with their tag names.
+    ///
+    /// Combines broader concept retrieval with tag name lookup, returning both
+    /// TagId and tag name for each broader concept. This is useful for building
+    /// FTS queries with expanded terms.
+    ///
+    /// # Arguments
+    ///
+    /// * `tag_id` - The tag to find broader concepts for
+    /// * `min_confidence` - Minimum confidence threshold (0.0-1.0) for edges
+    ///
+    /// # Returns
+    ///
+    /// Returns `Vec<(TagId, String)>` of (tag_id, tag_name) pairs, ordered by confidence.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::{Database, NoteService};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let db = Database::in_memory()?;
+    /// let service = NoteService::new(db);
+    ///
+    /// // Create tag hierarchy
+    /// let rust = service.get_or_create_tag("rust")?;
+    /// let programming = service.get_or_create_tag("programming")?;
+    /// service.create_edge(rust, programming, 0.9, "generic", Some("test"))?;
+    ///
+    /// // Get broader concept names
+    /// let broader_names = service.get_broader_concept_names(rust, 0.7)?;
+    /// assert_eq!(broader_names.len(), 1);
+    /// assert_eq!(broader_names[0].1, "programming");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn get_broader_concept_names(
+        &self,
+        tag_id: TagId,
+        min_confidence: f64,
+    ) -> Result<Vec<(TagId, String)>> {
+        let conn = self.db.connection();
+
+        let mut stmt = conn.prepare(
+            "SELECT e.target_tag_id, t.name
+             FROM edges e
+             JOIN tags t ON e.target_tag_id = t.id
+             WHERE e.source_tag_id = ?1
+               AND e.hierarchy_type = 'generic'
+               AND e.confidence >= ?2
+             ORDER BY e.confidence DESC",
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![tag_id.get(), min_confidence], |row| {
+            let target_id: i64 = row.get(0)?;
+            let name: String = row.get(1)?;
+            Ok((TagId::new(target_id), name))
+        })?;
+
+        let mut broader_concepts = Vec::new();
+        for row_result in rows {
+            broader_concepts.push(row_result?);
+        }
+
+        Ok(broader_concepts)
     }
 
     /// Searches for notes using spreading activation through the tag hierarchy graph.

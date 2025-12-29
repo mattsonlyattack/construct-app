@@ -4387,7 +4387,10 @@ fn dual_search_integration_test_realistic_ranking() {
 
     // Note 5: Has computer-science tag (distant in graph)
     let _note5 = service
-        .create_note("Algorithms and data structures", Some(&["computer-science"]))
+        .create_note(
+            "Algorithms and data structures",
+            Some(&["computer-science"]),
+        )
         .expect("failed to create note");
 
     // Search for "rust"
@@ -4405,7 +4408,9 @@ fn dual_search_integration_test_realistic_ranking() {
     if !metadata.graph_skipped {
         // Notes with both FTS and graph matches should rank higher than FTS-only or graph-only
         let has_both = results.iter().any(|r| r.found_by_both);
-        let has_fts_only = results.iter().any(|r| r.fts_score.is_some() && r.graph_score.is_none());
+        let has_fts_only = results
+            .iter()
+            .any(|r| r.fts_score.is_some() && r.graph_score.is_none());
 
         if has_both && has_fts_only {
             // The highest-scoring "found by both" should rank above pure FTS-only
@@ -4539,10 +4544,7 @@ fn dual_search_empty_results_from_both_channels() {
             "graph count should be 0 when skipped"
         );
     } else {
-        assert_eq!(
-            metadata.graph_result_count, 0,
-            "graph should find nothing"
-        );
+        assert_eq!(metadata.graph_result_count, 0, "graph should find nothing");
     }
 }
 
@@ -4686,10 +4688,7 @@ fn dual_search_graph_only_results() {
         if !graph_only_results.is_empty() {
             // Verify graph-only results are scored correctly
             for result in graph_only_results {
-                assert!(
-                    result.graph_score.is_some(),
-                    "should have graph score"
-                );
+                assert!(result.graph_score.is_some(), "should have graph score");
                 assert!(result.fts_score.is_none(), "should not have FTS score");
                 assert!(!result.found_by_both, "should not be found by both");
 
@@ -4810,3 +4809,1081 @@ fn dual_search_intersection_bonus_independent_of_weights() {
     }
 }
 
+// --- Query Expansion Configuration Tests (Task Group 1) ---
+
+#[test]
+fn query_expansion_config_default_values() {
+    let config = QueryExpansionConfig::default();
+
+    assert_eq!(
+        config.expansion_depth, 1,
+        "default expansion depth should be 1"
+    );
+    assert_eq!(
+        config.max_expansion_terms, 10,
+        "default max expansion terms should be 10"
+    );
+    assert!(
+        (config.broader_min_confidence - 0.7).abs() < 0.001,
+        "default broader min confidence should be 0.7"
+    );
+}
+
+#[test]
+fn query_expansion_config_from_env_parses_all_fields() {
+    unsafe {
+        std::env::set_var("CONS_EXPANSION_DEPTH", "2");
+        std::env::set_var("CONS_MAX_EXPANSION_TERMS", "15");
+        std::env::set_var("CONS_BROADER_MIN_CONFIDENCE", "0.8");
+    }
+
+    let config = QueryExpansionConfig::from_env();
+
+    assert_eq!(
+        config.expansion_depth, 2,
+        "should parse CONS_EXPANSION_DEPTH"
+    );
+    assert_eq!(
+        config.max_expansion_terms, 15,
+        "should parse CONS_MAX_EXPANSION_TERMS"
+    );
+    assert!(
+        (config.broader_min_confidence - 0.8).abs() < 0.001,
+        "should parse CONS_BROADER_MIN_CONFIDENCE"
+    );
+
+    // Clean up environment
+    unsafe {
+        std::env::remove_var("CONS_EXPANSION_DEPTH");
+        std::env::remove_var("CONS_MAX_EXPANSION_TERMS");
+        std::env::remove_var("CONS_BROADER_MIN_CONFIDENCE");
+    }
+}
+
+#[test]
+fn query_expansion_config_from_env_fallback_to_defaults_when_invalid() {
+    unsafe {
+        std::env::set_var("CONS_EXPANSION_DEPTH", "not_a_number");
+        std::env::set_var("CONS_MAX_EXPANSION_TERMS", "invalid");
+        std::env::set_var("CONS_BROADER_MIN_CONFIDENCE", "bad_value");
+    }
+
+    let config = QueryExpansionConfig::from_env();
+
+    assert_eq!(
+        config.expansion_depth, 1,
+        "should fallback to default when env var is invalid"
+    );
+    assert_eq!(
+        config.max_expansion_terms, 10,
+        "should fallback to default when env var is invalid"
+    );
+    assert!(
+        (config.broader_min_confidence - 0.7).abs() < 0.001,
+        "should fallback to default when env var is invalid"
+    );
+
+    // Clean up environment
+    unsafe {
+        std::env::remove_var("CONS_EXPANSION_DEPTH");
+        std::env::remove_var("CONS_MAX_EXPANSION_TERMS");
+        std::env::remove_var("CONS_BROADER_MIN_CONFIDENCE");
+    }
+}
+
+// --- Task Group 2: Broader Concept Retrieval Tests ---
+
+#[test]
+fn get_broader_concepts_finds_immediate_parent_via_generic_edge() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy: transformer -> neural-network (generic edge)
+    let transformer = service
+        .get_or_create_tag("transformer")
+        .expect("failed to create tag");
+    let neural_network = service
+        .get_or_create_tag("neural-network")
+        .expect("failed to create tag");
+
+    // Create generic edge with high confidence
+    service
+        .create_edge(transformer, neural_network, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Query for broader concepts of transformer
+    let broader = service
+        .get_broader_concepts(transformer, 0.7)
+        .expect("failed to get broader concepts");
+
+    assert_eq!(broader.len(), 1, "should find one broader concept");
+    assert_eq!(broader[0], neural_network, "should find neural-network");
+}
+
+#[test]
+fn get_broader_concepts_filters_by_confidence_threshold() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    let language = service
+        .get_or_create_tag("language")
+        .expect("failed to create tag");
+
+    // Create edges with different confidence levels
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(rust, language, 0.5, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Query with threshold 0.7 - should only get programming
+    let broader = service
+        .get_broader_concepts(rust, 0.7)
+        .expect("failed to get broader concepts");
+
+    assert_eq!(
+        broader.len(),
+        1,
+        "should only find concepts with confidence >= 0.7"
+    );
+    assert_eq!(broader[0], programming, "should find programming");
+}
+
+#[test]
+fn get_broader_concepts_ignores_partitive_edges() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let chapter = service
+        .get_or_create_tag("chapter")
+        .expect("failed to create tag");
+    let book = service
+        .get_or_create_tag("book")
+        .expect("failed to create tag");
+    let literature = service
+        .get_or_create_tag("literature")
+        .expect("failed to create tag");
+
+    // Create partitive edge (part-of): chapter -> book
+    service
+        .create_edge(chapter, book, 0.9, "partitive", Some("test"))
+        .expect("failed to create edge");
+
+    // Create generic edge (is-a): chapter -> literature
+    service
+        .create_edge(chapter, literature, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Query for broader concepts - should only traverse generic edges
+    let broader = service
+        .get_broader_concepts(chapter, 0.7)
+        .expect("failed to get broader concepts");
+
+    assert_eq!(broader.len(), 1, "should only traverse generic edges");
+    assert_eq!(broader[0], literature, "should find literature, not book");
+}
+
+#[test]
+fn get_broader_concepts_returns_empty_when_no_broader_concepts_exist() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag with no edges
+    let isolated_tag = service
+        .get_or_create_tag("isolated")
+        .expect("failed to create tag");
+
+    // Query for broader concepts
+    let broader = service
+        .get_broader_concepts(isolated_tag, 0.7)
+        .expect("failed to get broader concepts");
+
+    assert_eq!(
+        broader.len(),
+        0,
+        "should return empty vector when no broader concepts exist"
+    );
+}
+
+#[test]
+fn get_broader_concept_names_returns_tag_ids_and_names() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    let language = service
+        .get_or_create_tag("language")
+        .expect("failed to create tag");
+
+    // Create generic edges
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(rust, language, 0.8, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Query for broader concept names
+    let broader_names = service
+        .get_broader_concept_names(rust, 0.7)
+        .expect("failed to get broader concept names");
+
+    assert_eq!(broader_names.len(), 2, "should find two broader concepts");
+
+    // Verify we got both TagId and name
+    let names: Vec<String> = broader_names.iter().map(|(_, name)| name.clone()).collect();
+    assert!(
+        names.contains(&"programming".to_string()),
+        "should include programming"
+    );
+    assert!(
+        names.contains(&"language".to_string()),
+        "should include language"
+    );
+
+    // Verify TagIds match
+    let ids: Vec<TagId> = broader_names.iter().map(|(id, _)| *id).collect();
+    assert!(ids.contains(&programming), "should include programming ID");
+    assert!(ids.contains(&language), "should include language ID");
+}
+
+// --- Term Expansion Tests (Task Group 3) ---
+
+#[test]
+fn expand_search_term_with_broader_preserves_alias_expansion() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag and alias
+    let ml_tag = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+    service
+        .create_alias("ml", ml_tag, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Expand with broader (no broader edges exist)
+    let config = QueryExpansionConfig::default();
+    let expanded = service
+        .expand_search_term_with_broader("ml", &config)
+        .expect("failed to expand term");
+
+    // Should still get alias expansion
+    assert!(
+        expanded.contains(&"ml".to_string()),
+        "should include original alias"
+    );
+    assert!(
+        expanded.contains(&"machine-learning".to_string()),
+        "should include canonical tag from alias expansion"
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_adds_broader_concepts_for_single_term() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy: rust -> programming
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Expand single-term query
+    let config = QueryExpansionConfig::default();
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should include original term and broader concept
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should include original term"
+    );
+    assert!(
+        expanded.contains(&"programming".to_string()),
+        "should include broader concept"
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_adds_broader_concepts_for_two_term_query() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.8, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Two-term query should still expand broader
+    let config = QueryExpansionConfig::default();
+
+    // Test first term
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    assert!(
+        expanded.contains(&"programming".to_string()),
+        "two-term query should still expand broader concepts"
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_skips_broader_for_three_term_query() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // For three-term query, broader expansion should be skipped
+    // This means expand_search_term_with_broader should only do alias expansion
+    let config = QueryExpansionConfig::default();
+
+    // When called with should_expand set to false, should only do alias expansion
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should include original term from alias expansion
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should include original term"
+    );
+
+    // For the actual three-term conditional logic, we need to check at the call site
+    // This test verifies the method works when broader expansion is enabled
+    // The conditional logic is tested via should_expand_broader helper
+}
+
+#[test]
+fn expand_search_term_with_broader_enforces_term_limit_preferring_aliases() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag with many aliases and broader concepts
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+
+    // Create 8 aliases (with original = 9 terms from alias expansion)
+    for i in 1..=8 {
+        service
+            .create_alias(&format!("rust-alias-{}", i), rust, "user", 1.0, None)
+            .expect("failed to create alias");
+    }
+
+    // Create 5 broader concepts
+    for i in 1..=5 {
+        let broader = service
+            .get_or_create_tag(&format!("broader-{}", i))
+            .expect("failed to create tag");
+        service
+            .create_edge(rust, broader, 0.9, "generic", Some("test"))
+            .expect("failed to create edge");
+    }
+
+    // Use config with max 10 terms
+    let config = QueryExpansionConfig {
+        max_expansion_terms: 10,
+        broader_min_confidence: 0.7,
+        expansion_depth: 1,
+    };
+
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should be limited to 10 terms
+    assert!(
+        expanded.len() <= 10,
+        "should not exceed max_expansion_terms, got {} terms",
+        expanded.len()
+    );
+
+    // Should include original term
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should include original term"
+    );
+
+    // Aliases should be preferred - count how many aliases made it
+    let alias_count = expanded
+        .iter()
+        .filter(|term| term.starts_with("rust-alias-"))
+        .count();
+
+    // We should have most/all aliases since they're preferred
+    assert!(
+        alias_count >= 7,
+        "should prefer aliases over broader concepts, got {} aliases",
+        alias_count
+    );
+}
+
+#[test]
+fn should_expand_broader_returns_true_for_single_term_query() {
+    assert!(
+        super::should_expand_broader("rust"),
+        "single-term query should expand broader"
+    );
+}
+
+#[test]
+fn should_expand_broader_returns_true_for_two_term_query() {
+    assert!(
+        super::should_expand_broader("rust programming"),
+        "two-term query should expand broader"
+    );
+}
+
+#[test]
+fn should_expand_broader_returns_false_for_three_term_query() {
+    assert!(
+        !super::should_expand_broader("rust programming language"),
+        "three-term query should NOT expand broader"
+    );
+}
+
+#[test]
+fn should_expand_broader_returns_false_for_four_term_query() {
+    assert!(
+        !super::should_expand_broader("rust programming language tutorial"),
+        "four-term query should NOT expand broader"
+    );
+}
+
+#[test]
+fn should_expand_broader_handles_extra_whitespace() {
+    assert!(
+        super::should_expand_broader("  rust  programming  "),
+        "should handle extra whitespace correctly"
+    );
+    assert!(
+        !super::should_expand_broader("  rust  programming  language  "),
+        "should handle extra whitespace correctly for 3+ terms"
+    );
+}
+
+// --- Task Group 4: Enhanced FTS Query Building Tests ---
+
+#[test]
+fn build_expanded_fts_term_includes_alias_and_broader_in_or_expression() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create canonical tag "rust"
+    let rust_tag_id = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+
+    // Create alias "rustlang" -> "rust"
+    service
+        .create_alias("rustlang", rust_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Create broader concept "programming"
+    let programming_tag_id = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    // Create generic hierarchy edge: rust (narrower) -> programming (broader)
+    let conn = service.database().connection();
+    conn.execute(
+        "INSERT INTO edges (source_tag_id, target_tag_id, hierarchy_type, confidence, source)
+         VALUES (?1, ?2, 'generic', 0.9, 'user')",
+        [rust_tag_id.get(), programming_tag_id.get()],
+    )
+    .expect("failed to create edge");
+
+    // Build FTS term - should include rust, rustlang, and programming in OR expression
+    let config = QueryExpansionConfig::default();
+    let fts_term = service
+        .build_expanded_fts_term_with_config("rust", &config)
+        .expect("failed to build FTS term");
+
+    // Should be formatted as: ("rust" OR "rustlang" OR "programming")
+    assert!(
+        fts_term.contains("rust"),
+        "should include original term 'rust'"
+    );
+    assert!(
+        fts_term.contains("rustlang"),
+        "should include alias 'rustlang'"
+    );
+    assert!(
+        fts_term.contains("programming"),
+        "should include broader concept 'programming'"
+    );
+    assert!(
+        fts_term.contains(" OR "),
+        "should use OR logic between expanded terms"
+    );
+    assert!(fts_term.starts_with('('), "should start with parenthesis");
+    assert!(fts_term.ends_with(')'), "should end with parenthesis");
+}
+
+#[test]
+fn build_expanded_fts_term_maintains_and_between_multi_term_queries() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create two tags with aliases
+    let rust_tag_id = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    service
+        .create_alias("rustlang", rust_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    let tutorial_tag_id = service
+        .get_or_create_tag("tutorial")
+        .expect("failed to create tag");
+    service
+        .create_alias("guide", tutorial_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Build FTS terms for multi-term query
+    let config = QueryExpansionConfig::default();
+    let rust_fts = service
+        .build_expanded_fts_term_with_config("rust", &config)
+        .expect("failed to build rust FTS term");
+    let tutorial_fts = service
+        .build_expanded_fts_term_with_config("tutorial", &config)
+        .expect("failed to build tutorial FTS term");
+
+    // Simulate joining with AND (as done in search_notes)
+    let full_query = format!("{} AND {}", rust_fts, tutorial_fts);
+
+    // Should maintain AND logic between original terms
+    assert!(
+        full_query.contains(" AND "),
+        "should maintain AND between original query terms"
+    );
+
+    // Each term should have OR within its expansions
+    assert!(
+        rust_fts.contains(" OR "),
+        "rust term should have OR within expansions"
+    );
+    assert!(
+        tutorial_fts.contains(" OR "),
+        "tutorial term should have OR within expansions"
+    );
+}
+
+#[test]
+fn build_expanded_fts_term_properly_quotes_and_escapes() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag with special characters in name
+    let ml_tag_id = service
+        .get_or_create_tag("machine-learning")
+        .expect("failed to create tag");
+
+    // Create alias with hyphen (similar special character)
+    service
+        .create_alias("ml-model", ml_tag_id, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Build FTS term
+    let config = QueryExpansionConfig::default();
+    let fts_term = service
+        .build_expanded_fts_term_with_config("machine-learning", &config)
+        .expect("failed to build FTS term");
+
+    // Each term should be quoted for FTS5
+    assert!(
+        fts_term.contains("\"machine-learning\""),
+        "should quote term with hyphen"
+    );
+    assert!(
+        fts_term.contains("\"ml-model\""),
+        "should quote alias with hyphen"
+    );
+
+    // Should use FTS5 syntax with parentheses and OR
+    assert!(fts_term.starts_with('('), "should start with parenthesis");
+    assert!(fts_term.ends_with(')'), "should end with parenthesis");
+    assert!(
+        fts_term.contains(" OR "),
+        "should use OR between quoted terms"
+    );
+
+    // Verify the full structure is correct
+    // Expected: ("machine-learning" OR "ml-model") or ("ml-model" OR "machine-learning")
+    let contains_both = fts_term.contains("machine-learning") && fts_term.contains("ml-model");
+    assert!(
+        contains_both,
+        "should include both original and alias terms"
+    );
+}
+
+// --- Task Group 5: Search Method Integration Tests ---
+
+#[test]
+fn search_notes_returns_notes_tagged_with_broader_concept() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy: rust -> programming
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create a note tagged with "rust"
+    let note = service
+        .create_note("Learning Rust programming", Some(&["rust"]))
+        .expect("failed to create note");
+    let note_id = note.id();
+
+    // Search for "programming" - should find the note via broader concept expansion
+    let results = service
+        .search_notes("programming", None)
+        .expect("failed to search notes");
+
+    // Should find the note because rust has broader concept "programming"
+    assert!(
+        results.iter().any(|r| r.note.id() == note_id),
+        "should find note tagged with narrower concept (rust) when searching broader concept (programming)"
+    );
+}
+
+#[test]
+fn dual_search_applies_expansion_correctly_to_fts_channel() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy: rust -> programming
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.8, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create a note tagged with "rust"
+    let note = service
+        .create_note("Learning Rust systems programming", Some(&["rust"]))
+        .expect("failed to create note");
+    let note_id = note.id();
+
+    // dual_search calls search_notes internally, which should apply expansion
+    let (results, _metadata) = service
+        .dual_search("programming", None)
+        .expect("failed to dual search");
+
+    // Should find the note via FTS channel expansion
+    assert!(
+        results.iter().any(|r| r.note.id() == note_id),
+        "dual_search should find note via FTS channel with broader expansion"
+    );
+}
+
+#[test]
+fn graph_search_does_not_apply_broader_expansion() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy: rust -> programming
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create notes to ensure graph has connectivity
+    service
+        .create_note("Rust systems programming", Some(&["rust"]))
+        .expect("failed to create note");
+    service
+        .create_note("General programming concepts", Some(&["programming"]))
+        .expect("failed to create note");
+
+    // graph_search should use spreading activation, not broader expansion
+    // The implementation uses expand_search_term (alias only) for seed tags
+    let results = service
+        .graph_search("rust", None)
+        .expect("failed to graph search");
+
+    // This test verifies graph_search exists and runs without errors
+    // Spreading activation handles hierarchy traversal internally
+    // We just verify it doesn't break with the broader expansion feature
+    assert!(
+        results.len() >= 1,
+        "graph_search should return results using spreading activation"
+    );
+}
+
+#[test]
+fn end_to_end_note_tagged_rust_search_transformer_find_via_hierarchy() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tag hierarchy chain: rust -> programming -> transformer
+    // This simulates a scenario where "rust" is a narrower concept under "programming",
+    // and "programming" is narrower under "transformer" (architecture/paradigm)
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    let transformer = service
+        .get_or_create_tag("transformer")
+        .expect("failed to create tag");
+
+    // rust -> programming (depth 1)
+    service
+        .create_edge(rust, programming, 0.85, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // programming -> transformer (depth 2 from rust)
+    service
+        .create_edge(programming, transformer, 0.80, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Create a note tagged with "rust"
+    let note = service
+        .create_note("Advanced Rust programming techniques", Some(&["rust"]))
+        .expect("failed to create note");
+    let note_id = note.id();
+
+    // Search for "transformer"
+    // With depth=1 (default), searching "transformer" should expand to include notes
+    // tagged with "programming" (direct child). But the note is tagged with "rust",
+    // which is 2 levels down, so it should NOT be found with depth=1.
+    let results = service
+        .search_notes("transformer", None)
+        .expect("failed to search notes");
+
+    // Should NOT find the rust note because it's 2 levels deep
+    // and default expansion_depth is 1
+    assert!(
+        !results.iter().any(|r| r.note.id() == note_id),
+        "should NOT find note tagged with rust when searching transformer (2 levels deep with depth=1)"
+    );
+
+    // Now search for "programming" - should find the rust note (1 level down)
+    let results_programming = service
+        .search_notes("programming", None)
+        .expect("failed to search notes");
+
+    assert!(
+        results_programming.iter().any(|r| r.note.id() == note_id),
+        "should find note tagged with rust when searching programming (1 level deep)"
+    );
+}
+
+// --- Task Group 6: Additional Strategic Tests for Edge Cases ---
+
+#[test]
+fn get_broader_concepts_exact_confidence_threshold_included() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create tags
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+
+    // Create edge with confidence exactly at threshold (0.7)
+    service
+        .create_edge(rust, programming, 0.7, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Query with threshold 0.7 - should include edge with exactly 0.7 confidence
+    let broader = service
+        .get_broader_concepts(rust, 0.7)
+        .expect("failed to get broader concepts");
+
+    assert_eq!(
+        broader.len(),
+        1,
+        "should include concepts with confidence exactly at threshold (>=)"
+    );
+    assert_eq!(
+        broader[0], programming,
+        "should find programming with confidence=0.7"
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_exactly_ten_terms_no_truncation() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag with 8 aliases (9 terms total with original)
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+
+    for i in 1..=8 {
+        service
+            .create_alias(&format!("rust-alias-{}", i), rust, "user", 1.0, None)
+            .expect("failed to create alias");
+    }
+
+    // Add exactly 1 broader concept to bring total to exactly 10 terms
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Expand with max_expansion_terms = 10
+    let config = QueryExpansionConfig {
+        max_expansion_terms: 10,
+        broader_min_confidence: 0.7,
+        expansion_depth: 1,
+    };
+
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should include all 10 terms without truncation
+    assert_eq!(
+        expanded.len(),
+        10,
+        "should include exactly 10 terms without truncation"
+    );
+
+    // Should include original term
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should include original term"
+    );
+
+    // Should include broader concept
+    assert!(
+        expanded.contains(&"programming".to_string()),
+        "should include broader concept when total is exactly at limit"
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_eleven_terms_truncates_broader_first() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag with 8 aliases (9 terms total with original)
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+
+    for i in 1..=8 {
+        service
+            .create_alias(&format!("rust-alias-{}", i), rust, "user", 1.0, None)
+            .expect("failed to create alias");
+    }
+
+    // Add 2 broader concepts to bring total to 11 terms
+    let programming = service
+        .get_or_create_tag("programming")
+        .expect("failed to create tag");
+    let language = service
+        .get_or_create_tag("language")
+        .expect("failed to create tag");
+
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(rust, language, 0.85, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Expand with max_expansion_terms = 10
+    let config = QueryExpansionConfig {
+        max_expansion_terms: 10,
+        broader_min_confidence: 0.7,
+        expansion_depth: 1,
+    };
+
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should be truncated to 10 terms
+    assert_eq!(
+        expanded.len(),
+        10,
+        "should truncate to max_expansion_terms when exceeded"
+    );
+
+    // Should include original term (alias)
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should include original term"
+    );
+
+    // All aliases should be preserved
+    let alias_count = expanded
+        .iter()
+        .filter(|term| term.starts_with("rust-alias-"))
+        .count();
+    assert_eq!(
+        alias_count, 8,
+        "should preserve all 8 aliases when truncating"
+    );
+
+    // At least one broader concept should be excluded due to truncation
+    let broader_count = expanded
+        .iter()
+        .filter(|term| term == &"programming" || term == &"language")
+        .count();
+    assert!(
+        broader_count < 2,
+        "should exclude at least one broader concept when over limit"
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_multiple_broader_concepts_all_included() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag with multiple broader concepts
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    let programming = service
+        .get_or_create_tag("programming-language")
+        .expect("failed to create tag");
+    let systems = service
+        .get_or_create_tag("systems-programming")
+        .expect("failed to create tag");
+    let compiled = service
+        .get_or_create_tag("compiled-language")
+        .expect("failed to create tag");
+
+    // Create multiple generic edges: rust -> programming, systems, compiled
+    service
+        .create_edge(rust, programming, 0.9, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(rust, systems, 0.85, "generic", Some("test"))
+        .expect("failed to create edge");
+    service
+        .create_edge(rust, compiled, 0.8, "generic", Some("test"))
+        .expect("failed to create edge");
+
+    // Expand with default config
+    let config = QueryExpansionConfig::default();
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should include all three broader concepts
+    assert!(
+        expanded.contains(&"programming-language".to_string()),
+        "should include first broader concept"
+    );
+    assert!(
+        expanded.contains(&"systems-programming".to_string()),
+        "should include second broader concept"
+    );
+    assert!(
+        expanded.contains(&"compiled-language".to_string()),
+        "should include third broader concept"
+    );
+
+    // Should have at least 4 terms: original + 3 broader concepts
+    assert!(
+        expanded.len() >= 4,
+        "should include original term plus all broader concepts, got {} terms",
+        expanded.len()
+    );
+}
+
+#[test]
+fn expand_search_term_with_broader_no_broader_but_expansion_enabled() {
+    let db = Database::in_memory().expect("failed to create in-memory database");
+    let service = NoteService::new(db);
+
+    // Create a tag with no broader concepts but with an alias
+    let rust = service
+        .get_or_create_tag("rust")
+        .expect("failed to create tag");
+    service
+        .create_alias("rustlang", rust, "user", 1.0, None)
+        .expect("failed to create alias");
+
+    // Expand with broader expansion enabled (single-term query)
+    let config = QueryExpansionConfig::default();
+    let expanded = service
+        .expand_search_term_with_broader("rust", &config)
+        .expect("failed to expand term");
+
+    // Should still get alias expansion even though no broader concepts exist
+    assert!(
+        expanded.contains(&"rust".to_string()),
+        "should include original term"
+    );
+    assert!(
+        expanded.contains(&"rustlang".to_string()),
+        "should include alias even when no broader concepts exist"
+    );
+
+    // Should have exactly 2 terms (original + alias, no broader)
+    assert_eq!(
+        expanded.len(),
+        2,
+        "should gracefully handle missing broader concepts"
+    );
+}

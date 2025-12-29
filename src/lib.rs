@@ -15,7 +15,7 @@ pub use models::{AliasInfo, Note, NoteBuilder, NoteId, Tag, TagAssignment, TagId
 pub use ollama::{OllamaClient, OllamaClientBuilder, OllamaClientTrait, OllamaError};
 pub use service::{
     DualSearchConfig, DualSearchMetadata, DualSearchResult, ListNotesOptions, NoteService,
-    SearchResult, SortOrder,
+    QueryExpansionConfig, SearchResult, SortOrder,
 };
 
 #[cfg(test)]
