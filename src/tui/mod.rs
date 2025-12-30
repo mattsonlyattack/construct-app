@@ -4,6 +4,7 @@
 //! using ratatui for rendering and crossterm for terminal management.
 
 use std::io;
+use std::panic;
 
 use anyhow::{Context, Result};
 use crossterm::{
@@ -51,6 +52,29 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Re
         .context("failed to leave alternate screen")?;
     terminal.show_cursor().context("failed to show cursor")?;
     Ok(())
+}
+
+/// Minimal terminal restoration for panic handler.
+///
+/// Does not require a Terminal reference, making it safe to call
+/// from a panic hook where we may not have access to the Terminal.
+/// Ignores errors since we're likely already in a bad state.
+fn restore_terminal_panic() {
+    let _ = disable_raw_mode();
+    let _ = execute!(io::stdout(), LeaveAlternateScreen);
+}
+
+/// Initializes a panic hook that restores the terminal before panicking.
+///
+/// This ensures the terminal is restored even if a panic occurs anywhere
+/// in the application, not just in the event loop. The original panic
+/// hook is preserved and called after terminal restoration.
+fn init_panic_hook() {
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        restore_terminal_panic();
+        original_hook(panic_info);
+    }));
 }
 
 /// Runs the main event loop for the TUI.
@@ -153,6 +177,9 @@ fn load_notes(app: &mut App, service: &crate::service::NoteService) -> Result<()
 /// - Note loading fails
 /// - Terminal initialization or event loop fails
 pub fn run() -> Result<()> {
+    // Install panic hook to restore terminal on panic
+    init_panic_hook();
+
     // Get database path and ensure directory exists (reusing shared utilities)
     let db_path = crate::utils::get_database_path().context("Failed to get database path")?;
     crate::utils::ensure_database_directory(&db_path)
