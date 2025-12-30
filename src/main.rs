@@ -1,12 +1,11 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cons::{
     Database, NoteId, NoteService, TagId, TagSource, autotagger::AutoTaggerBuilder,
-    enhancer::NoteEnhancerBuilder, hierarchy::HierarchySuggesterBuilder,
-    ollama::OllamaClientBuilder,
+    enhancer::NoteEnhancerBuilder, ensure_database_directory, get_database_path, get_tag_names,
+    hierarchy::HierarchySuggesterBuilder, ollama::OllamaClientBuilder,
 };
 
 /// cons - structure-last personal knowledge management CLI
@@ -36,6 +35,8 @@ enum Commands {
     TagAlias(TagAliasCommand),
     /// Manage tag hierarchy
     Hierarchy(HierarchyCommand),
+    /// Launch interactive terminal UI
+    Tui,
 }
 
 /// Add a new note
@@ -159,6 +160,7 @@ fn main() {
         Commands::Tags(cmd) => handle_tags(cmd),
         Commands::TagAlias(cmd) => handle_tag_alias(cmd),
         Commands::Hierarchy(cmd) => handle_hierarchy(cmd),
+        Commands::Tui => handle_tui(),
     };
 
     if let Err(e) = result {
@@ -433,30 +435,7 @@ fn enhance_note(service: &NoteService, note_id: NoteId, content: &str) -> Result
     Ok(())
 }
 
-/// Gets the cross-platform database path.
-///
-/// Returns the path as `{data_dir}/cons/notes.db` where `data_dir` is:
-/// - Linux: `~/.local/share`
-/// - macOS: `~/Library/Application Support`
-/// - Windows: `C:\Users\<user>\AppData\Roaming`
-fn get_database_path() -> Result<PathBuf> {
-    let data_dir =
-        dirs::data_dir().ok_or_else(|| anyhow::anyhow!("Failed to determine data directory"))?;
-
-    Ok(data_dir.join("cons").join("notes.db"))
-}
-
-/// Ensures the parent directory of the database file exists.
-///
-/// Creates the directory structure if it doesn't exist using `create_dir_all`.
-fn ensure_database_directory(db_path: &Path) -> Result<()> {
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("Failed to create database directory: {}", parent.display())
-        })?;
-    }
-    Ok(())
-}
+// Database path utilities moved to src/utils.rs for reuse across CLI and TUI
 
 /// Handles the list command by displaying notes.
 fn handle_list(cmd: &ListCommand) -> Result<()> {
@@ -731,40 +710,7 @@ fn format_note_content(note: &cons::Note) -> String {
     output
 }
 
-/// Gets tag names from the database for the given tag assignments.
-///
-/// Uses a single batch query with IN clause for efficiency.
-fn get_tag_names(db: &Database, tag_assignments: &[cons::TagAssignment]) -> Result<Vec<String>> {
-    if tag_assignments.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let conn = db.connection();
-    let tag_ids: Vec<i64> = tag_assignments.iter().map(|ta| ta.tag_id().get()).collect();
-
-    // Build query with placeholders
-    let placeholders: Vec<String> = (0..tag_ids.len()).map(|_| "?".to_string()).collect();
-    let query = format!(
-        "SELECT name FROM tags WHERE id IN ({})",
-        placeholders.join(", ")
-    );
-
-    let mut stmt = conn
-        .prepare(&query)
-        .context("Failed to prepare tag query")?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(tag_ids.iter()), |row| {
-            row.get::<_, String>(0)
-        })
-        .context("Failed to query tag names")?;
-
-    let mut names = Vec::new();
-    for row_result in rows {
-        names.push(row_result.context("Failed to read tag name")?);
-    }
-
-    Ok(names)
-}
+// get_tag_names moved to src/utils.rs for reuse across CLI and TUI
 
 /// Handles the tags command by dispatching to subcommand handlers.
 fn handle_tags(cmd: &TagsCommand) -> Result<()> {
@@ -1061,6 +1007,14 @@ fn execute_hierarchy_suggest(db: Database) -> Result<()> {
     println!("\nSummary: {} edges created", created_count);
 
     Ok(())
+}
+
+/// Handles the tui command by launching the interactive terminal UI.
+///
+/// Calls the `tui::run()` function to initialize the TUI and start the event loop.
+/// Terminal state is always restored on exit, even on error.
+fn handle_tui() -> Result<()> {
+    cons::tui::run().context("Failed to run TUI")
 }
 
 /// Parses comma-separated tags from a string.

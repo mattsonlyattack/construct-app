@@ -1554,7 +1554,11 @@ impl NoteService {
     }
 
     /// Executes an FTS5 search with the given pre-built query string.
-    fn execute_fts_search(&self, fts_query: &str, limit: Option<usize>) -> Result<Vec<SearchResult>> {
+    fn execute_fts_search(
+        &self,
+        fts_query: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<SearchResult>> {
         let conn = self.db.connection();
 
         // Query FTS5 table with BM25 ranking, also selecting the score

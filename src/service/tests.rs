@@ -4383,7 +4383,10 @@ fn dual_search_result_struct_instantiation() {
     );
     assert_eq!(metadata_skipped.fts_result_count, 10);
     assert_eq!(metadata_skipped.graph_result_count, 0);
-    assert_eq!(metadata_skipped.expanded_fts_query, "\"rust\" OR \"rustlang\"");
+    assert_eq!(
+        metadata_skipped.expanded_fts_query,
+        "\"rust\" OR \"rustlang\""
+    );
 }
 
 // --- Dual Search Tests (Task Group 2) ---
@@ -5918,7 +5921,10 @@ fn graph_search_high_degree_tag_receives_centrality_boost() {
             |row| row.get(0),
         )
         .expect("failed to query degree_centrality");
-    assert_eq!(hub_centrality, 4, "hub tag should have degree_centrality = 4");
+    assert_eq!(
+        hub_centrality, 4,
+        "hub tag should have degree_centrality = 4"
+    );
 
     // Create an isolated tag with degree_centrality = 0 for comparison
     let _isolated_tag = service
@@ -6130,10 +6136,7 @@ fn dual_search_centrality_boost_affects_final_ranking() {
         .expect("failed to create hub note");
 
     let _other_note = service
-        .create_note(
-            "Introduction to algorithms",
-            Some(&["supervised-learning"]),
-        )
+        .create_note("Introduction to algorithms", Some(&["supervised-learning"]))
         .expect("failed to create other note");
 
     // Run dual search for "machine learning"
@@ -6148,9 +6151,7 @@ fn dual_search_centrality_boost_affects_final_ranking() {
     assert!(!results.is_empty(), "should find notes");
 
     // Verify hub_note benefits from centrality boost in graph scoring
-    let hub_result = results
-        .iter()
-        .find(|r| r.note.id() == hub_note.id());
+    let hub_result = results.iter().find(|r| r.note.id() == hub_note.id());
 
     if let Some(hub_result) = hub_result {
         // Hub note should be found

@@ -1,0 +1,25 @@
+task_groups:
+  - name: Module Structure and Application State
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Terminal Setup and Event Loop
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: NoteService Connection and Data Loading
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Panel Layout and Rendering
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: CLI Subcommand and Entry Point
+    claude_code_subagent: rust-engineer
+    standards:
+      - all
+  - name: Test Review and Gap Analysis
+    claude_code_subagent: rust-engineer
+    standards:
+      - all

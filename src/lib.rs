@@ -6,6 +6,8 @@ pub mod models;
 pub mod ollama;
 pub mod service;
 pub mod spreading_activation;
+pub mod tui;
+pub mod utils;
 
 pub use autotagger::{AutoTagger, AutoTaggerBuilder, TagNormalizer};
 pub use db::Database;
@@ -17,6 +19,7 @@ pub use service::{
     DualSearchConfig, DualSearchMetadata, DualSearchResult, ListNotesOptions, NoteService,
     QueryExpansionConfig, SearchResult, SortOrder,
 };
+pub use utils::{ensure_database_directory, get_database_path, get_tag_names};
 
 #[cfg(test)]
 mod tests {
