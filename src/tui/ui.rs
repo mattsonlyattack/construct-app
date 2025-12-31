@@ -30,7 +30,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Search input
+            Constraint::Length(3), // Filter input
             Constraint::Min(0),    // Content area
         ])
         .split(size);
@@ -52,7 +52,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 /// Renders the search input panel at the top of the screen.
 ///
-/// Shows the current search buffer with a cursor indicator when focused.
+/// Shows the current filter buffer with a cursor indicator when focused.
 fn render_search_input(frame: &mut Frame, app: &App, area: Rect) {
     let is_focused = matches!(app.focus(), Focus::SearchInput);
 

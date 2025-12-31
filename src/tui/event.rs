@@ -16,7 +16,7 @@ use super::app::{App, Focus};
 /// - `q`: Quit application (from any focus state)
 /// - `Tab`: Cycle focus between panels
 /// - `Esc`: Return to search input focus
-/// - When `SearchInput` focused: character input updates search buffer
+/// - When `SearchInput` focused: character input updates filter buffer
 /// - When `NoteList` focused: j/k navigation, Enter to select
 ///
 /// # Examples
@@ -64,7 +64,8 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> bool {
 
 /// Handles keyboard input when search input is focused.
 ///
-/// Accepts character input and backspace for editing the search buffer.
+/// Accepts character input and backspace for editing the filter buffer.
+/// Changes mark the filter as pending search (debounced in event loop).
 fn handle_search_input(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char(c) if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT => {

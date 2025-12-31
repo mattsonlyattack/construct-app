@@ -1,18 +1,26 @@
+use std::time::Instant;
+
 use crate::models::Note;
 
 /// Application state for the TUI.
 ///
-/// Manages notes list, selection state, search input, and panel focus.
+/// Manages notes list, selection state, filter input, and panel focus.
 #[derive(Debug, Clone)]
 pub struct App {
-    /// List of loaded notes
+    /// All loaded notes (unfiltered, used for fallback when filter is empty)
+    all_notes: Vec<Note>,
+    /// Currently displayed notes (search results or all notes)
     notes: Vec<Note>,
     /// Currently selected note index (None if no selection)
     selected_index: Option<usize>,
-    /// Search input buffer
+    /// Filter input buffer
     search_input: String,
     /// Currently focused panel
     focus: Focus,
+    /// When the filter was last changed (for debouncing search)
+    search_changed_at: Option<Instant>,
+    /// Whether we need to run a search (filter changed but not yet searched)
+    search_pending: bool,
 }
 
 /// Panel focus state for keyboard navigation.
@@ -20,7 +28,7 @@ pub struct App {
 /// Determines which panel receives keyboard input and how keys are interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    /// Search input bar is focused (typing updates search buffer)
+    /// Filter input bar is focused (typing updates filter buffer and filters notes)
     SearchInput,
     /// Note list panel is focused (j/k navigation, Enter to select)
     NoteList,
@@ -32,7 +40,7 @@ impl App {
     /// Creates a new App with default state.
     ///
     /// Default focus is `SearchInput` per requirements.
-    /// Notes list is empty, selection is None, search input is empty.
+    /// Notes list is empty, selection is None, filter input is empty.
     ///
     /// # Examples
     ///
@@ -45,16 +53,24 @@ impl App {
     /// ```
     pub fn new() -> Self {
         Self {
+            all_notes: Vec::new(),
             notes: Vec::new(),
             selected_index: None,
             search_input: String::new(),
             focus: Focus::SearchInput,
+            search_changed_at: None,
+            search_pending: false,
         }
     }
 
-    /// Returns the list of notes.
+    /// Returns the currently displayed (filtered) notes.
     pub fn notes(&self) -> &[Note] {
         &self.notes
+    }
+
+    /// Returns all loaded notes (unfiltered).
+    pub fn all_notes(&self) -> &[Note] {
+        &self.all_notes
     }
 
     /// Returns the currently selected note index.
@@ -62,7 +78,7 @@ impl App {
         self.selected_index
     }
 
-    /// Returns the search input buffer.
+    /// Returns the filter input buffer.
     pub fn search_input(&self) -> &str {
         &self.search_input
     }
@@ -74,9 +90,38 @@ impl App {
 
     /// Sets the notes list and resets selection to None.
     ///
-    /// Used when loading notes from database or after search.
+    /// Used when loading notes from database. Stores notes in both
+    /// `all_notes` (for filtering) and `notes` (for display).
     pub fn set_notes(&mut self, notes: Vec<Note>) {
+        self.all_notes = notes.clone();
         self.notes = notes;
+        self.selected_index = None;
+        // Apply current filter if any
+        if !self.search_input.is_empty() {
+            self.apply_filter();
+        }
+    }
+
+    /// Applies the current filter to notes.
+    ///
+    /// Filters `all_notes` based on `search_input` (case-insensitive substring match)
+    /// and updates `notes` with the results. Resets selection when filter changes.
+    pub fn apply_filter(&mut self) {
+        let query = self.search_input.to_lowercase();
+
+        if query.is_empty() {
+            // No filter - show all notes
+            self.notes = self.all_notes.clone();
+        } else {
+            // Filter notes by content (case-insensitive)
+            self.notes = self.all_notes
+                .iter()
+                .filter(|note| note.content().to_lowercase().contains(&query))
+                .cloned()
+                .collect();
+        }
+
+        // Reset selection when filter changes
         self.selected_index = None;
     }
 
@@ -221,18 +266,60 @@ impl App {
         });
     }
 
-    /// Adds a character to the search input buffer.
+    /// Adds a character to the filter input buffer and marks search as pending.
     ///
     /// Used when `SearchInput` is focused and user types.
+    /// Sets `search_changed_at` for debouncing.
     pub fn push_search_char(&mut self, c: char) {
         self.search_input.push(c);
+        self.mark_search_changed();
     }
 
-    /// Removes the last character from the search input buffer.
+    /// Removes the last character from the filter input buffer and marks search as pending.
     ///
     /// Used for Backspace handling when `SearchInput` is focused.
     pub fn pop_search_char(&mut self) {
         self.search_input.pop();
+        self.mark_search_changed();
+    }
+
+    /// Marks the filter as changed, triggering a debounced search.
+    fn mark_search_changed(&mut self) {
+        self.search_changed_at = Some(Instant::now());
+        self.search_pending = true;
+    }
+
+    /// Returns whether a search is pending and enough time has passed (debounce).
+    ///
+    /// Returns `true` if filter changed and at least `debounce_ms` milliseconds
+    /// have passed since the last change.
+    pub fn should_search(&self, debounce_ms: u64) -> bool {
+        if !self.search_pending {
+            return false;
+        }
+        match self.search_changed_at {
+            Some(changed_at) => changed_at.elapsed().as_millis() >= u128::from(debounce_ms),
+            None => false,
+        }
+    }
+
+    /// Clears the search pending flag after a search is executed.
+    pub fn clear_search_pending(&mut self) {
+        self.search_pending = false;
+    }
+
+    /// Returns whether the filter is empty.
+    pub fn search_is_empty(&self) -> bool {
+        self.search_input.is_empty()
+    }
+
+    /// Sets the filtered/displayed notes without updating all_notes.
+    ///
+    /// Used when search results come from NoteService.dual_search().
+    /// Resets selection when notes change.
+    pub fn set_filtered_notes(&mut self, notes: Vec<Note>) {
+        self.notes = notes;
+        self.selected_index = None;
     }
 
     /// Clears the selection (Esc key behavior).
@@ -557,5 +644,162 @@ mod tests {
 
         app.select_previous();
         assert_eq!(app.selected_index(), None);
+    }
+
+    // --- Debounced Search Tests ---
+
+    #[test]
+    fn push_search_char_marks_search_pending() {
+        let mut app = App::new();
+
+        // Initially no search pending
+        assert!(!app.should_search(0));
+
+        // After typing, search becomes pending
+        app.push_search_char('a');
+        assert!(app.should_search(0)); // With 0ms debounce, should be ready immediately
+        assert_eq!(app.search_input(), "a");
+    }
+
+    #[test]
+    fn pop_search_char_marks_search_pending() {
+        let mut app = App::new();
+        app.push_search_char('a');
+        app.push_search_char('b');
+        app.clear_search_pending(); // Clear from push
+
+        // After backspace, search becomes pending again
+        app.pop_search_char();
+        assert!(app.should_search(0));
+        assert_eq!(app.search_input(), "a");
+    }
+
+    #[test]
+    fn clear_search_pending_prevents_should_search() {
+        let mut app = App::new();
+        app.push_search_char('t');
+        assert!(app.should_search(0));
+
+        // After clearing, should_search returns false
+        app.clear_search_pending();
+        assert!(!app.should_search(0));
+    }
+
+    #[test]
+    fn debounce_timing_works() {
+        let mut app = App::new();
+        app.push_search_char('x');
+
+        // With 1000ms debounce, should NOT be ready immediately
+        assert!(!app.should_search(1000));
+
+        // But with 0ms debounce, should be ready
+        assert!(app.should_search(0));
+    }
+
+    #[test]
+    fn search_is_empty_returns_correctly() {
+        let mut app = App::new();
+        assert!(app.search_is_empty());
+
+        app.push_search_char('z');
+        assert!(!app.search_is_empty());
+
+        app.pop_search_char();
+        assert!(app.search_is_empty());
+    }
+
+    #[test]
+    fn set_filtered_notes_updates_displayed_notes() {
+        let mut app = App::new();
+
+        // Set all notes first
+        let all = vec![
+            NoteBuilder::new()
+                .id(NoteId::new(1))
+                .content("Note A")
+                .build(),
+            NoteBuilder::new()
+                .id(NoteId::new(2))
+                .content("Note B")
+                .build(),
+        ];
+        app.set_notes(all);
+        assert_eq!(app.notes().len(), 2);
+        assert_eq!(app.all_notes().len(), 2);
+
+        // Simulate search results - only 1 note matches
+        let filtered = vec![NoteBuilder::new()
+            .id(NoteId::new(1))
+            .content("Note A")
+            .build()];
+        app.set_filtered_notes(filtered);
+
+        // Displayed notes updated, but all_notes unchanged
+        assert_eq!(app.notes().len(), 1);
+        assert_eq!(app.all_notes().len(), 2);
+        assert_eq!(app.notes()[0].content(), "Note A");
+    }
+
+    #[test]
+    fn apply_filter_restores_all_notes_when_empty() {
+        let mut app = App::new();
+        let notes = vec![
+            NoteBuilder::new()
+                .id(NoteId::new(1))
+                .content("Hello world")
+                .build(),
+            NoteBuilder::new()
+                .id(NoteId::new(2))
+                .content("Goodbye world")
+                .build(),
+        ];
+        app.set_notes(notes);
+
+        // Simulate filtered results
+        app.set_filtered_notes(vec![NoteBuilder::new()
+            .id(NoteId::new(1))
+            .content("Hello world")
+            .build()]);
+        assert_eq!(app.notes().len(), 1);
+
+        // Apply filter with empty search restores all
+        app.apply_filter();
+        assert_eq!(app.notes().len(), 2);
+    }
+
+    #[test]
+    fn apply_filter_filters_by_content() {
+        let mut app = App::new();
+        let notes = vec![
+            NoteBuilder::new()
+                .id(NoteId::new(1))
+                .content("Hello world")
+                .build(),
+            NoteBuilder::new()
+                .id(NoteId::new(2))
+                .content("Goodbye moon")
+                .build(),
+            NoteBuilder::new()
+                .id(NoteId::new(3))
+                .content("Hello again")
+                .build(),
+        ];
+        app.set_notes(notes);
+
+        // Type "hello" (case-insensitive)
+        app.push_search_char('h');
+        app.push_search_char('e');
+        app.push_search_char('l');
+        app.push_search_char('l');
+        app.push_search_char('o');
+
+        // Apply client-side filter
+        app.apply_filter();
+
+        // Should only show notes containing "hello"
+        assert_eq!(app.notes().len(), 2);
+        assert!(app.notes()[0].content().to_lowercase().contains("hello"));
+        assert!(app.notes()[1].content().to_lowercase().contains("hello"));
     }
 }

@@ -77,20 +77,25 @@ fn init_panic_hook() {
     }));
 }
 
+/// Debounce delay for search (milliseconds).
+/// Search executes after this many ms of no typing.
+const SEARCH_DEBOUNCE_MS: u64 = 200;
+
 /// Runs the main event loop for the TUI.
 ///
 /// Polls for keyboard events, updates app state, and re-renders.
+/// Executes debounced search when filter input changes.
 /// Exits when the user presses 'q' or an error occurs.
 ///
 /// # Errors
 ///
 /// Returns an error if event polling, rendering, or terminal operations fail.
 /// Terminal state is always restored, even on error.
-pub fn run_event_loop(app: &mut App) -> Result<()> {
+pub fn run_event_loop(app: &mut App, service: &crate::service::NoteService) -> Result<()> {
     let mut terminal = init_terminal()?;
 
     // Ensure terminal is restored even if we panic or error
-    let result = run_event_loop_internal(app, &mut terminal);
+    let result = run_event_loop_internal(app, service, &mut terminal);
 
     // Always restore terminal state
     if let Err(e) = restore_terminal(&mut terminal) {
@@ -106,16 +111,22 @@ pub fn run_event_loop(app: &mut App) -> Result<()> {
 /// in the outer function.
 fn run_event_loop_internal(
     app: &mut App,
+    service: &crate::service::NoteService,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<()> {
     loop {
+        // Check if we need to run a debounced search
+        if app.should_search(SEARCH_DEBOUNCE_MS) {
+            execute_search(app, service);
+        }
+
         // Render the current state
         terminal.draw(|frame| {
             ui::draw(frame, app);
         })?;
 
-        // Poll for events
-        if crossterm_event::poll(std::time::Duration::from_millis(100))?
+        // Poll for events (short timeout to allow debounce checks)
+        if crossterm_event::poll(std::time::Duration::from_millis(50))?
             && let Event::Key(key) = crossterm_event::read()?
         {
             // Handle the key event
@@ -127,6 +138,35 @@ fn run_event_loop_internal(
     }
 
     Ok(())
+}
+
+/// Executes a search using dual_search and updates the app's notes.
+///
+/// If the filter is empty, restores all notes.
+/// Otherwise, runs dual_search and displays matching notes.
+fn execute_search(app: &mut App, service: &crate::service::NoteService) {
+    app.clear_search_pending();
+
+    if app.search_is_empty() {
+        // Empty filter - restore all notes
+        app.apply_filter();
+        return;
+    }
+
+    // Run dual_search (FTS + graph search)
+    let query = app.search_input();
+    match service.dual_search(query, Some(50)) {
+        Ok((results, _metadata)) => {
+            // Convert SearchResults to Notes
+            let notes: Vec<_> = results.into_iter().map(|r| r.note).collect();
+            // Update displayed notes (don't update all_notes, just notes)
+            app.set_filtered_notes(notes);
+        }
+        Err(_) => {
+            // On error, fall back to client-side filtering
+            app.apply_filter();
+        }
+    }
 }
 
 /// Loads recent notes from the database into the App.
@@ -195,8 +235,8 @@ pub fn run() -> Result<()> {
     let mut app = App::new();
     load_notes(&mut app, &service).context("Failed to load notes from database")?;
 
-    // Start the TUI event loop
-    run_event_loop(&mut app).context("TUI event loop failed")?;
+    // Start the TUI event loop with NoteService for debounced search
+    run_event_loop(&mut app, &service).context("TUI event loop failed")?;
 
     Ok(())
 }
