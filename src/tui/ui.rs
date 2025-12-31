@@ -26,12 +26,13 @@ use super::app::{App, Focus};
 pub fn draw(frame: &mut Frame, app: &App) {
     let size = frame.area();
 
-    // Create main layout: search input at top, content below
+    // Create main layout: search input at top, content in middle, shortcuts at bottom
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Filter input
             Constraint::Min(0),    // Content area
+            Constraint::Length(1), // Shortcut bar
         ])
         .split(size);
 
@@ -48,6 +49,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     render_search_input(frame, app, main_chunks[0]);
     render_note_list(frame, app, content_chunks[0]);
     render_detail_view(frame, app, content_chunks[1]);
+    render_shortcut_bar(frame, app, main_chunks[2]);
 }
 
 /// Renders the search input panel at the top of the screen.
@@ -219,15 +221,18 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
 
             for tag in note.tags() {
                 let source_indicator = if tag.source().is_user() {
-                    "user"
+                    "user".to_string()
                 } else {
-                    "llm"
+                    format!("llm {}%", tag.confidence())
                 };
 
-                let tag_id = tag.tag_id().get();
                 text.lines.push(Line::from(vec![
                     Span::raw("  - "),
-                    Span::raw(format!("Tag #{tag_id} ")),
+                    Span::styled(
+                        tag.name().to_string(),
+                        Style::default().fg(Color::Cyan),
+                    ),
+                    Span::raw(" "),
                     Span::styled(
                         format!("({source_indicator})"),
                         Style::default()
@@ -280,6 +285,47 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
+/// Renders the shortcut bar at the bottom of the screen.
+///
+/// Shows context-aware keyboard shortcuts based on current focus state.
+/// Format: `Key: action | Key: action` with keys highlighted in cyan.
+fn render_shortcut_bar(frame: &mut Frame, app: &App, area: Rect) {
+    let key_style = Style::default().fg(Color::Cyan);
+    let sep_style = Style::default().fg(Color::DarkGray);
+
+    // Build shortcuts based on focus
+    let mut spans = vec![
+        Span::styled("q", key_style),
+        Span::raw(": quit"),
+        Span::styled(" | ", sep_style),
+        Span::styled("Tab", key_style),
+        Span::raw(": next panel"),
+        Span::styled(" | ", sep_style),
+        Span::styled("Shift+Tab", key_style),
+        Span::raw(": prev panel"),
+        Span::styled(" | ", sep_style),
+        Span::styled("Esc", key_style),
+        Span::raw(": reset"),
+    ];
+
+    // Add focus-specific shortcuts
+    match app.focus() {
+        Focus::NoteList => {
+            spans.push(Span::styled(" | ", sep_style));
+            spans.push(Span::styled("j/k", key_style));
+            spans.push(Span::raw(": navigate"));
+        }
+        Focus::SearchInput | Focus::DetailView => {
+            // No additional shortcuts for these focus states currently
+        }
+    }
+
+    let line = Line::from(spans);
+    let paragraph = Paragraph::new(line);
+
+    frame.render_widget(paragraph, area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,8 +348,8 @@ mod tests {
                 .content("This is a much longer note that should be truncated in the list view")
                 .created_at(now)
                 .tags(vec![
-                    TagAssignment::user(TagId::new(1), now),
-                    TagAssignment::llm(TagId::new(2), "deepseek-r1:8b", 85, now),
+                    TagAssignment::user(TagId::new(1), "rust", now),
+                    TagAssignment::llm(TagId::new(2), "async", "deepseek-r1:8b", 85, now),
                 ])
                 .build(),
             NoteBuilder::new()
@@ -404,9 +450,10 @@ mod tests {
                 .enhanced_at(OffsetDateTime::now_utc())
                 .created_at(OffsetDateTime::now_utc())
                 .tags(vec![
-                    TagAssignment::user(TagId::new(1), OffsetDateTime::now_utc()),
+                    TagAssignment::user(TagId::new(1), "rust", OffsetDateTime::now_utc()),
                     TagAssignment::llm(
                         TagId::new(2),
+                        "performance",
                         "deepseek-r1:8b",
                         90,
                         OffsetDateTime::now_utc(),

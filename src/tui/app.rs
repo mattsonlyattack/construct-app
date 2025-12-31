@@ -175,6 +175,45 @@ impl App {
             Focus::NoteList => Focus::DetailView,
             Focus::DetailView => Focus::SearchInput,
         };
+        self.auto_select_on_note_list_focus();
+    }
+
+    /// Cycles focus to the previous panel in reverse Tab order.
+    ///
+    /// Order: `SearchInput` -> `DetailView` -> `NoteList` -> `SearchInput`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cons::tui::{App, Focus};
+    ///
+    /// let mut app = App::new();
+    /// assert_eq!(app.focus(), Focus::SearchInput);
+    ///
+    /// app.prev_focus();
+    /// assert_eq!(app.focus(), Focus::DetailView);
+    ///
+    /// app.prev_focus();
+    /// assert_eq!(app.focus(), Focus::NoteList);
+    ///
+    /// app.prev_focus();
+    /// assert_eq!(app.focus(), Focus::SearchInput);
+    /// ```
+    pub fn prev_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::SearchInput => Focus::DetailView,
+            Focus::NoteList => Focus::SearchInput,
+            Focus::DetailView => Focus::NoteList,
+        };
+        self.auto_select_on_note_list_focus();
+    }
+
+    /// Auto-selects first note when entering NoteList focus with no selection.
+    fn auto_select_on_note_list_focus(&mut self) {
+        if self.focus == Focus::NoteList && self.selected_index.is_none() && !self.notes.is_empty()
+        {
+            self.selected_index = Some(0);
+        }
     }
 
     /// Moves selection down in the notes list (j key navigation).
@@ -501,6 +540,21 @@ mod tests {
         assert_eq!(app.focus(), Focus::DetailView);
 
         app.next_focus();
+        assert_eq!(app.focus(), Focus::SearchInput);
+    }
+
+    #[test]
+    fn focus_cycles_in_reverse_tab_order() {
+        let mut app = App::new();
+        assert_eq!(app.focus(), Focus::SearchInput);
+
+        app.prev_focus();
+        assert_eq!(app.focus(), Focus::DetailView);
+
+        app.prev_focus();
+        assert_eq!(app.focus(), Focus::NoteList);
+
+        app.prev_focus();
         assert_eq!(app.focus(), Focus::SearchInput);
     }
 

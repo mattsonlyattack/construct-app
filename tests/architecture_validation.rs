@@ -465,11 +465,13 @@ fn test_all_required_types_accessible_from_crate_root() {
 
     // TagAssignment: tag-note relationship with metadata
     let now = time::OffsetDateTime::now_utc();
-    let user_assignment = TagAssignment::user(TagId::new(1), now);
+    let user_assignment = TagAssignment::user(TagId::new(1), "rust", now);
     assert_eq!(user_assignment.confidence(), 100);
+    assert_eq!(user_assignment.name(), "rust");
 
-    let llm_assignment = TagAssignment::llm(TagId::new(2), "deepseek-r1:8b", 85, now);
+    let llm_assignment = TagAssignment::llm(TagId::new(2), "async", "deepseek-r1:8b", 85, now);
     assert_eq!(llm_assignment.confidence(), 85);
+    assert_eq!(llm_assignment.name(), "async");
     assert_eq!(llm_assignment.model(), Some("deepseek-r1:8b"));
 
     // --- Verify service operations work with these types ---

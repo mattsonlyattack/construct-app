@@ -42,8 +42,9 @@ mod tests {
         assert_eq!(format!("{}", source), "user");
 
         let now = OffsetDateTime::now_utc();
-        let tag_assignment = TagAssignment::user(TagId::new(1), now);
+        let tag_assignment = TagAssignment::user(TagId::new(1), "test-tag", now);
         assert_eq!(tag_assignment.confidence(), 100);
+        assert_eq!(tag_assignment.name(), "test-tag");
 
         let note = NoteBuilder::new()
             .id(NoteId::new(1))

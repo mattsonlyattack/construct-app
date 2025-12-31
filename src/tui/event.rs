@@ -36,9 +36,13 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
 
-    // Global focus cycling with Tab
-    if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+    // Global focus cycling with Tab / Shift+Tab (BackTab)
+    if key.code == KeyCode::Tab {
         app.next_focus();
+        return false;
+    }
+    if key.code == KeyCode::BackTab {
+        app.prev_focus();
         return false;
     }
 
@@ -164,6 +168,28 @@ mod tests {
     }
 
     #[test]
+    fn shift_tab_cycles_focus_backwards() {
+        let mut app = App::new();
+        assert_eq!(app.focus(), Focus::SearchInput);
+
+        // BackTab (Shift+Tab) to DetailView
+        let key = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+        let should_quit = handle_key_event(&mut app, key);
+        assert!(!should_quit);
+        assert_eq!(app.focus(), Focus::DetailView);
+
+        // BackTab to NoteList
+        let should_quit = handle_key_event(&mut app, key);
+        assert!(!should_quit);
+        assert_eq!(app.focus(), Focus::NoteList);
+
+        // BackTab back to SearchInput
+        let should_quit = handle_key_event(&mut app, key);
+        assert!(!should_quit);
+        assert_eq!(app.focus(), Focus::SearchInput);
+    }
+
+    #[test]
     fn navigation_keys_update_selection_when_note_list_focused() {
         let mut app = App::new();
         let notes = vec![
@@ -182,27 +208,27 @@ mod tests {
         ];
         app.set_notes(notes);
 
-        // Switch to NoteList focus
+        // Switch to NoteList focus - auto-selects first note
         app.next_focus();
         assert_eq!(app.focus(), Focus::NoteList);
-        assert_eq!(app.selected_index(), None);
+        assert_eq!(app.selected_index(), Some(0));
 
-        // Press 'j' to select first note
+        // Press 'j' to move down
         let key_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         let should_quit = handle_key_event(&mut app, key_j);
         assert!(!should_quit);
-        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.selected_index(), Some(1));
 
         // Press 'j' again to move down
         let should_quit = handle_key_event(&mut app, key_j);
         assert!(!should_quit);
-        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(app.selected_index(), Some(2));
 
         // Press 'k' to move up
         let key_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
         let should_quit = handle_key_event(&mut app, key_k);
         assert!(!should_quit);
-        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.selected_index(), Some(1));
     }
 
     #[test]
@@ -325,9 +351,8 @@ mod tests {
         ];
         app.set_notes(notes);
 
-        // Navigate to DetailView focus
-        app.next_focus(); // -> NoteList
-        app.select_next(); // Select first note
+        // Navigate to DetailView focus (auto-selects first note when entering NoteList)
+        app.next_focus(); // -> NoteList (auto-selects index 0)
         app.next_focus(); // -> DetailView
 
         assert_eq!(app.focus(), Focus::DetailView);
@@ -367,10 +392,9 @@ mod tests {
         ];
         app.set_notes(notes);
 
-        // Go to NoteList and select second note
-        app.next_focus(); // -> NoteList
-        app.select_next(); // Select first
-        app.select_next(); // Select second
+        // Go to NoteList (auto-selects first) and move to second note
+        app.next_focus(); // -> NoteList (auto-selects index 0)
+        app.select_next(); // Move to second (index 1)
         assert_eq!(app.selected_index(), Some(1));
 
         // Cycle through focus states
@@ -388,7 +412,7 @@ mod tests {
             "selection should persist in SearchInput"
         );
 
-        app.next_focus(); // -> NoteList
+        app.next_focus(); // -> NoteList (selection already exists, no auto-select)
         assert_eq!(
             app.selected_index(),
             Some(1),

@@ -219,7 +219,7 @@ mod tests {
     #[test]
     fn builder_allows_setting_all_fields() {
         let now = OffsetDateTime::now_utc();
-        let tag = TagAssignment::user(TagId::new(1), now);
+        let tag = TagAssignment::user(TagId::new(1), "rust", now);
 
         let note = NoteBuilder::new()
             .id(NoteId::new(42))
@@ -256,8 +256,8 @@ mod tests {
     fn note_with_mixed_tag_sources() {
         let now = OffsetDateTime::now_utc();
 
-        let user_tag = TagAssignment::user(TagId::new(1), now);
-        let llm_tag = TagAssignment::llm(TagId::new(2), "deepseek-r1:8b", 85, now);
+        let user_tag = TagAssignment::user(TagId::new(1), "rust", now);
+        let llm_tag = TagAssignment::llm(TagId::new(2), "async", "deepseek-r1:8b", 85, now);
 
         let note = NoteBuilder::new()
             .id(NoteId::new(1))
@@ -280,8 +280,8 @@ mod tests {
             .content("Test")
             .build();
 
-        note.add_tag(TagAssignment::user(TagId::new(1), now));
-        note.add_tag(TagAssignment::llm(TagId::new(2), "model", 75, now));
+        note.add_tag(TagAssignment::user(TagId::new(1), "testing", now));
+        note.add_tag(TagAssignment::llm(TagId::new(2), "debug", "model", 75, now));
 
         assert_eq!(note.tags().len(), 2);
     }

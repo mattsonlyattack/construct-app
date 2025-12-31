@@ -348,12 +348,9 @@ mod tests {
         assert_eq!(app.focus(), Focus::SearchInput);
         assert_eq!(app.selected_index(), None);
 
-        // Navigate to note list
+        // Navigate to note list - auto-selects first note
         app.next_focus();
         assert_eq!(app.focus(), Focus::NoteList);
-
-        // Select first note
-        app.select_next();
         assert_eq!(app.selected_index(), Some(0));
         assert!(app.selected_note().is_some());
         assert_eq!(app.selected_note().unwrap().content(), "First note content");
@@ -366,7 +363,7 @@ mod tests {
 
         // Navigate down in list (switch back to list first)
         app.next_focus(); // -> SearchInput
-        app.next_focus(); // -> NoteList
+        app.next_focus(); // -> NoteList (selection persists, no auto-select)
         app.select_next(); // -> Second note
         assert_eq!(app.selected_index(), Some(1));
         assert_eq!(

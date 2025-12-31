@@ -366,9 +366,11 @@ impl NoteService {
                         (note_id, tag_id.get(), now),
                     )?;
 
-                    // Build TagAssignment for the returned Note
+                    // Build TagAssignment for the returned Note (use normalized name)
+                    let stored_name = TagNormalizer::normalize_tag(tag_name);
                     tag_assignments.push(TagAssignment::user(
                         tag_id,
+                        stored_name,
                         OffsetDateTime::from_unix_timestamp(now)?,
                     ));
                 }
@@ -467,31 +469,34 @@ impl NoteService {
                 enhancement_model,
                 enhancement_confidence,
             )) => {
-                // Load tag assignments for this note
+                // Load tag assignments for this note (with tag names)
                 let mut tag_stmt = conn.prepare(
-                    "SELECT nt.tag_id, nt.confidence, nt.source, nt.created_at, nt.model_version
+                    "SELECT nt.tag_id, t.name, nt.confidence, nt.source, nt.created_at, nt.model_version
                      FROM note_tags nt
+                     JOIN tags t ON nt.tag_id = t.id
                      WHERE nt.note_id = ?1
                      ORDER BY nt.created_at",
                 )?;
 
                 let tag_rows = tag_stmt.query_map([id], |row| {
                     let tag_id: i64 = row.get(0)?;
-                    let confidence: f64 = row.get(1)?;
-                    let source: String = row.get(2)?;
-                    let tag_created_at: i64 = row.get(3)?;
-                    let model_version: Option<String> = row.get(4)?;
+                    let tag_name: String = row.get(1)?;
+                    let confidence: f64 = row.get(2)?;
+                    let source: String = row.get(3)?;
+                    let tag_created_at: i64 = row.get(4)?;
+                    let model_version: Option<String> = row.get(5)?;
 
-                    Ok((tag_id, confidence, source, tag_created_at, model_version))
+                    Ok((tag_id, tag_name, confidence, source, tag_created_at, model_version))
                 })?;
 
                 let mut tag_assignments = Vec::new();
                 for row_result in tag_rows {
-                    let (tag_id, confidence, source, tag_created_at, model_version) = row_result?;
+                    let (tag_id, tag_name, confidence, source, tag_created_at, model_version) = row_result?;
 
                     let tag_assignment = if source == "user" {
                         TagAssignment::user(
                             TagId::new(tag_id),
+                            tag_name,
                             OffsetDateTime::from_unix_timestamp(tag_created_at)?,
                         )
                     } else {
@@ -501,6 +506,7 @@ impl NoteService {
 
                         TagAssignment::llm(
                             TagId::new(tag_id),
+                            tag_name,
                             model,
                             confidence_u8,
                             OffsetDateTime::from_unix_timestamp(tag_created_at)?,
