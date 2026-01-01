@@ -21,6 +21,8 @@ pub struct App {
     search_changed_at: Option<Instant>,
     /// Whether we need to run a search (filter changed but not yet searched)
     search_pending: bool,
+    /// Scroll offset for detail view
+    detail_scroll: u16,
 }
 
 /// Panel focus state for keyboard navigation.
@@ -60,6 +62,7 @@ impl App {
             focus: Focus::SearchInput,
             search_changed_at: None,
             search_pending: false,
+            detail_scroll: 0,
         }
     }
 
@@ -261,6 +264,7 @@ impl App {
                 }
             }
         });
+        self.detail_scroll = 0;
     }
 
     /// Moves selection up in the notes list (k key navigation).
@@ -303,6 +307,27 @@ impl App {
             Some(0) => self.notes.len() - 1,
             Some(i) => i - 1,
         });
+        self.detail_scroll = 0;
+    }
+
+    /// Returns the current detail view scroll offset.
+    pub fn detail_scroll(&self) -> u16 {
+        self.detail_scroll
+    }
+
+    /// Scrolls the detail view down by the specified amount.
+    pub fn scroll_detail_down(&mut self, amount: u16) {
+        self.detail_scroll = self.detail_scroll.saturating_add(amount);
+    }
+
+    /// Scrolls the detail view up by the specified amount.
+    pub fn scroll_detail_up(&mut self, amount: u16) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(amount);
+    }
+
+    /// Resets the detail view scroll to the top.
+    pub fn reset_detail_scroll(&mut self) {
+        self.detail_scroll = 0;
     }
 
     /// Adds a character to the filter input buffer and marks search as pending.

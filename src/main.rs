@@ -42,9 +42,9 @@ enum Commands {
 /// Add a new note
 #[derive(Parser)]
 struct AddCommand {
-    /// The content of the note
+    /// The content of the note (opens $EDITOR if not provided)
     #[arg(value_name = "CONTENT")]
-    content: String,
+    content: Option<String>,
 
     /// Comma-separated tags to apply to the note
     #[arg(short, long, value_name = "TAGS")]
@@ -183,8 +183,14 @@ fn is_user_error(error: &anyhow::Error) -> bool {
 
 /// Handles the add command by creating a new note.
 fn handle_add(cmd: &AddCommand) -> Result<()> {
+    // Get content from argument or open editor
+    let content = match &cmd.content {
+        Some(c) => c.clone(),
+        None => open_editor_for_note()?,
+    };
+
     // Validate content is not empty or whitespace-only
-    if cmd.content.trim().is_empty() {
+    if content.trim().is_empty() {
         anyhow::bail!("Note content cannot be empty");
     }
 
@@ -195,7 +201,60 @@ fn handle_add(cmd: &AddCommand) -> Result<()> {
     // Open database and create service
     let db = Database::open(&db_path).context("Failed to open database")?;
 
-    execute_add(&cmd.content, cmd.tags.as_deref(), db)
+    execute_add(&content, cmd.tags.as_deref(), db)
+}
+
+/// Opens the user's preferred editor to compose a note.
+///
+/// Uses $EDITOR, falls back to $VISUAL, then to common editors.
+fn open_editor_for_note() -> Result<String> {
+    use std::io::{Read, Write};
+
+    // Create temp file with .md extension for editor syntax highlighting
+    let mut temp_file = tempfile::Builder::new()
+        .prefix("cons-note-")
+        .suffix(".md")
+        .tempfile()
+        .context("Failed to create temporary file")?;
+
+    // Write placeholder comment
+    writeln!(
+        temp_file,
+        "<!-- Enter your note below. Lines starting with <!-- are removed. -->"
+    )?;
+    temp_file.flush()?;
+
+    let temp_path = temp_file.path().to_path_buf();
+
+    // Determine editor
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    // Open editor
+    let status = std::process::Command::new(&editor)
+        .arg(&temp_path)
+        .status()
+        .with_context(|| format!("Failed to open editor: {editor}"))?;
+
+    if !status.success() {
+        anyhow::bail!("Editor exited with non-zero status");
+    }
+
+    // Read content back
+    let mut content = String::new();
+    std::fs::File::open(&temp_path)
+        .context("Failed to read temp file")?
+        .read_to_string(&mut content)?;
+
+    // Remove HTML comment lines
+    let content: String = content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("<!--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    Ok(content.trim().to_string())
 }
 
 /// Executes the add command logic with a provided database.
@@ -228,7 +287,7 @@ fn execute_add(content: &str, tags: Option<&str>, db: Database) -> Result<()> {
     // Enhance note content (fail-safe: errors logged but don't fail command)
     // Enhancement runs AFTER save (original preserved) but BEFORE tagging (tag original intent)
     if let Err(e) = enhance_note(&service, note.id(), content) {
-        eprintln!("Enhancement skipped: {e}");
+        eprintln!("Enhancement skipped: {e:#}");
     }
 
     // Auto-tag synchronously (fail-safe: errors logged but don't fail command)
@@ -1081,7 +1140,7 @@ mod tests {
     #[test]
     fn content_validation_rejects_empty_string() {
         let cmd = AddCommand {
-            content: String::new(),
+            content: Some(String::new()),
             tags: None,
         };
         let result = handle_add(&cmd);
@@ -1092,7 +1151,7 @@ mod tests {
     #[test]
     fn content_validation_rejects_whitespace_only() {
         let cmd = AddCommand {
-            content: "   \n\t  ".to_string(),
+            content: Some("   \n\t  ".to_string()),
             tags: None,
         };
         let result = handle_add(&cmd);

@@ -14,8 +14,10 @@ dirs = "5.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 thiserror = "1.0"
 dotenvy = "0.15"
-ratatui = "0.28"
+ratatui = "0.30"
 crossterm = "0.28"
+tui-markdown = "0.3.7"
+tempfile = "3.10"
 
 [dev-dependencies]
 tempfile = "3.10"

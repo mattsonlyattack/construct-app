@@ -58,8 +58,7 @@ pub fn handle_key_event(app: &mut App, key: KeyEvent) -> bool {
         Focus::SearchInput => handle_search_input(app, key),
         Focus::NoteList => handle_note_list(app, key),
         Focus::DetailView => {
-            // DetailView currently has no special key handling
-            // (scrolling will be added in future roadmap items)
+            handle_detail_view(app, key);
         }
     }
 
@@ -102,6 +101,23 @@ fn handle_note_list(app: &mut App, key: KeyEvent) {
         }
         _ => {
             // Ignore other keys when in note list
+        }
+    }
+}
+
+/// Handles keyboard input when detail view is focused.
+///
+/// Supports Vim-style scrolling (j/k).
+fn handle_detail_view(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('j') if key.modifiers.is_empty() => {
+            app.scroll_detail_down(1);
+        }
+        KeyCode::Char('k') if key.modifiers.is_empty() => {
+            app.scroll_detail_up(1);
+        }
+        _ => {
+            // Ignore other keys when in detail view
         }
     }
 }
@@ -336,8 +352,8 @@ mod tests {
     }
 
     #[test]
-    fn navigation_keys_ignored_when_detail_view_focused() {
-        // Test that j/k keys don't navigate when DetailView is focused
+    fn jk_scrolls_in_detail_view() {
+        // Test that j/k keys scroll (not navigate) when DetailView is focused
         let mut app = App::new();
         let notes = vec![
             NoteBuilder::new()
@@ -357,23 +373,23 @@ mod tests {
 
         assert_eq!(app.focus(), Focus::DetailView);
         assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.detail_scroll(), 0);
 
-        // Press j and k - should not change selection
+        // Press j - should scroll down, not change selection
         let key_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         handle_key_event(&mut app, key_j);
-        assert_eq!(
-            app.selected_index(),
-            Some(0),
-            "j should be ignored in DetailView"
-        );
+        assert_eq!(app.selected_index(), Some(0), "j should not change selection");
+        assert_eq!(app.detail_scroll(), 1, "j should scroll down");
 
+        // Press k - should scroll up
         let key_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
         handle_key_event(&mut app, key_k);
-        assert_eq!(
-            app.selected_index(),
-            Some(0),
-            "k should be ignored in DetailView"
-        );
+        assert_eq!(app.selected_index(), Some(0), "k should not change selection");
+        assert_eq!(app.detail_scroll(), 0, "k should scroll up");
+
+        // Press k again - should not go negative
+        handle_key_event(&mut app, key_k);
+        assert_eq!(app.detail_scroll(), 0, "scroll should not go below 0");
     }
 
     #[test]

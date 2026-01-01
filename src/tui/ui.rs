@@ -180,17 +180,18 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
     let content = if let Some(note) = app.selected_note() {
         let mut text = Text::default();
 
-        // Original content section
+        // Original content section (rendered as markdown)
         text.lines.push(Line::from(vec![Span::styled(
             "Content:",
             Style::default().add_modifier(Modifier::BOLD),
         )]));
-        text.lines.push(Line::from(note.content()));
+        let content_md = tui_markdown::from_str(note.content());
+        text.lines.extend(content_md.lines);
 
         // Enhanced content section (if available)
         if let Some(enhanced) = note.content_enhanced() {
             text.lines.push(Line::from(""));
-            text.lines.push(Line::from("---"));
+            text.lines.push(Line::from("───────────────────────────────"));
             text.lines.push(Line::from(""));
 
             // Enhanced label with confidence
@@ -208,7 +209,9 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
                 )]));
             }
 
-            text.lines.push(Line::from(enhanced));
+            // Render enhanced content as markdown
+            let enhanced_md = tui_markdown::from_str(enhanced);
+            text.lines.extend(enhanced_md.lines);
         }
 
         // Tags section
@@ -280,7 +283,8 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
 
     let paragraph = Paragraph::new(content)
         .block(block)
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.detail_scroll(), 0));
 
     frame.render_widget(paragraph, area);
 }
@@ -315,8 +319,13 @@ fn render_shortcut_bar(frame: &mut Frame, app: &App, area: Rect) {
             spans.push(Span::styled("j/k", key_style));
             spans.push(Span::raw(": navigate"));
         }
-        Focus::SearchInput | Focus::DetailView => {
-            // No additional shortcuts for these focus states currently
+        Focus::DetailView => {
+            spans.push(Span::styled(" | ", sep_style));
+            spans.push(Span::styled("j/k", key_style));
+            spans.push(Span::raw(": scroll"));
+        }
+        Focus::SearchInput => {
+            // No additional shortcuts for search input
         }
     }
 
