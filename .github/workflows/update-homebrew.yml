@@ -107,10 +107,13 @@ jobs:
           sed -i "s/LINUX_SHA256_PLACEHOLDER/$LINUX_SHA256/g" Formula/cons.rb
 
       - name: Commit and push
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/mattsonlyattack/homebrew-tap.git"
           git add Formula/cons.rb
           git commit -m "Update cons to $VERSION"
           git push
