@@ -1,5 +1,6 @@
 pub mod autotagger;
 pub mod db;
+pub mod doctor;
 pub mod enhancer;
 pub mod hierarchy;
 pub mod models;

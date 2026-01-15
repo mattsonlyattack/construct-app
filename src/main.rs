@@ -37,6 +37,8 @@ enum Commands {
     Hierarchy(HierarchyCommand),
     /// Launch interactive terminal UI
     Tui,
+    /// Health check and maintenance utilities
+    Doctor(DoctorCommand),
 }
 
 /// Add a new note
@@ -145,6 +147,20 @@ enum HierarchyCommands {
     Suggest,
 }
 
+/// Health check and maintenance utilities
+#[derive(Parser)]
+struct DoctorCommand {
+    #[command(subcommand)]
+    command: Option<DoctorSubcommand>,
+}
+
+/// Doctor subcommands
+#[derive(Subcommand)]
+enum DoctorSubcommand {
+    /// Backfill all missing enrichments (enhancement, tags, hierarchy)
+    Enhance,
+}
+
 fn main() {
     // Load environment variables from .env file if it exists
     // This is a no-op if .env doesn't exist, so it's safe to call unconditionally
@@ -161,6 +177,7 @@ fn main() {
         Commands::TagAlias(cmd) => handle_tag_alias(cmd),
         Commands::Hierarchy(cmd) => handle_hierarchy(cmd),
         Commands::Tui => handle_tui(),
+        Commands::Doctor(cmd) => handle_doctor(cmd),
     };
 
     if let Err(e) = result {
@@ -1120,6 +1137,54 @@ fn execute_hierarchy_suggest(db: Database) -> Result<()> {
 /// Terminal state is always restored on exit, even on error.
 fn handle_tui() -> Result<()> {
     cons::tui::run().context("Failed to run TUI")
+}
+
+/// Handles the doctor command by dispatching to health check or enhance subcommand.
+fn handle_doctor(cmd: &DoctorCommand) -> Result<()> {
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+    let db = Database::open(&db_path).context("Failed to open database")?;
+
+    match &cmd.command {
+        None => execute_doctor_health(&db_path.to_string_lossy(), db),
+        Some(DoctorSubcommand::Enhance) => execute_doctor_enhance(db),
+    }
+}
+
+/// Executes the doctor health check command.
+fn execute_doctor_health(db_path: &str, db: Database) -> Result<()> {
+    let service = NoteService::new(db);
+    cons::doctor::run_health_checks(db_path, &service)
+}
+
+/// Executes the doctor enhance (backfill) command.
+fn execute_doctor_enhance(db: Database) -> Result<()> {
+    let service = NoteService::new(db);
+
+    // Create backfill plan
+    let plan = cons::doctor::create_backfill_plan(&service)?;
+
+    if plan.is_empty() {
+        println!("Nothing to backfill - all notes are enhanced and tagged!");
+        return Ok(());
+    }
+
+    // Show plan and confirm
+    cons::doctor::print_backfill_plan(&plan);
+
+    if !cons::doctor::confirm_backfill() {
+        println!("Backfill cancelled.");
+        return Ok(());
+    }
+
+    // Execute backfill
+    println!();
+    let result = cons::doctor::execute_backfill(&service, &plan)?;
+
+    // Print summary
+    cons::doctor::print_backfill_summary(&result);
+
+    Ok(())
 }
 
 /// Parses comma-separated tags from a string.
