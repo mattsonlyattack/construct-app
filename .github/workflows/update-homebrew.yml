@@ -1,0 +1,102 @@
+name: Update Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: mattsonlyattack/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Download release assets and compute SHA256
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          # Download binaries
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "cons-macos-*" \
+            --pattern "cons-linux-x86_64-musl" \
+            --dir ./assets
+
+          # Compute SHA256 hashes
+          INTEL_SHA256=$(sha256sum ./assets/cons-macos-x86_64 | cut -d' ' -f1)
+          ARM_SHA256=$(sha256sum ./assets/cons-macos-aarch64 | cut -d' ' -f1)
+          LINUX_SHA256=$(sha256sum ./assets/cons-linux-x86_64-musl | cut -d' ' -f1)
+
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "INTEL_SHA256=$INTEL_SHA256" >> $GITHUB_ENV
+          echo "ARM_SHA256=$ARM_SHA256" >> $GITHUB_ENV
+          echo "LINUX_SHA256=$LINUX_SHA256" >> $GITHUB_ENV
+
+      - name: Update formula
+        run: |
+          cd homebrew-tap
+
+          cat > Formula/cons.rb << 'FORMULA'
+          class Cons < Formula
+            desc "Structure-last personal knowledge management CLI with AI-powered auto-tagging"
+            homepage "https://github.com/mattsonlyattack/construct-app"
+            version "VERSION_PLACEHOLDER"
+            license "MIT"
+
+            on_macos do
+              on_intel do
+                url "https://github.com/mattsonlyattack/construct-app/releases/download/vVERSION_PLACEHOLDER/cons-macos-x86_64"
+                sha256 "INTEL_SHA256_PLACEHOLDER"
+              end
+
+              on_arm do
+                url "https://github.com/mattsonlyattack/construct-app/releases/download/vVERSION_PLACEHOLDER/cons-macos-aarch64"
+                sha256 "ARM_SHA256_PLACEHOLDER"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "https://github.com/mattsonlyattack/construct-app/releases/download/vVERSION_PLACEHOLDER/cons-linux-x86_64-musl"
+                sha256 "LINUX_SHA256_PLACEHOLDER"
+              end
+            end
+
+            def install
+              if OS.mac?
+                if Hardware::CPU.intel?
+                  bin.install "cons-macos-x86_64" => "cons"
+                else
+                  bin.install "cons-macos-aarch64" => "cons"
+                end
+              elsif OS.linux?
+                bin.install "cons-linux-x86_64-musl" => "cons"
+              end
+            end
+
+            test do
+              system "#{bin}/cons", "--version"
+            end
+          end
+          FORMULA
+
+          # Replace placeholders
+          sed -i "s/VERSION_PLACEHOLDER/$VERSION/g" Formula/cons.rb
+          sed -i "s/INTEL_SHA256_PLACEHOLDER/$INTEL_SHA256/g" Formula/cons.rb
+          sed -i "s/ARM_SHA256_PLACEHOLDER/$ARM_SHA256/g" Formula/cons.rb
+          sed -i "s/LINUX_SHA256_PLACEHOLDER/$LINUX_SHA256/g" Formula/cons.rb
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/cons.rb
+          git commit -m "Update cons to $VERSION"
+          git push
