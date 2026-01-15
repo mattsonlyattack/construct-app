@@ -386,13 +386,30 @@ fn find_alias_opportunity(service: &NoteService, suggested_tag: &str) -> Option<
 /// - Creates alias mapping with source='llm', confidence from tagger, model_version from OLLAMA_MODEL
 /// - Alias creation is fail-safe: errors are logged but don't block note capture
 fn auto_tag_note(service: &NoteService, note_id: NoteId, content: &str) -> Result<()> {
-    let model = std::env::var("OLLAMA_MODEL").context("OLLAMA_MODEL not set")?;
+    let client = Arc::new(
+        OllamaClientBuilder::new()
+            .build()
+            .context("Failed to build Ollama client")?,
+    );
 
-    let client = OllamaClientBuilder::new()
-        .build()
-        .context("Failed to build Ollama client")?;
+    // Try OLLAMA_MODEL env var first, then auto-detect from Ollama
+    let model = match std::env::var("OLLAMA_MODEL") {
+        Ok(m) if !m.is_empty() => m,
+        _ => {
+            // Auto-detect: fetch available models from Ollama
+            let models = client.list_models().context(
+                "Ollama not reachable. Is it running? Try: ollama serve",
+            )?;
 
-    let tagger = AutoTaggerBuilder::new().client(Arc::new(client)).build();
+            models.into_iter().next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No models installed in Ollama. Install one with: ollama pull gemma3:4b"
+                )
+            })?
+        }
+    };
+
+    let tagger = AutoTaggerBuilder::new().client(client).build();
 
     let tags = tagger
         .generate_tags(&model, content)
@@ -462,13 +479,29 @@ fn auto_tag_note(service: &NoteService, note_id: NoteId, content: &str) -> Resul
 /// Enhancement expands abbreviated notes, completes fragments, and clarifies implicit
 /// context while preserving the original intent. The original content is never modified.
 fn enhance_note(service: &NoteService, note_id: NoteId, content: &str) -> Result<()> {
-    let model = std::env::var("OLLAMA_MODEL").context("OLLAMA_MODEL not set")?;
+    let client = Arc::new(
+        OllamaClientBuilder::new()
+            .build()
+            .context("Failed to build Ollama client")?,
+    );
 
-    let client = OllamaClientBuilder::new()
-        .build()
-        .context("Failed to build Ollama client")?;
+    // Try OLLAMA_MODEL env var first, then auto-detect from Ollama
+    let model = match std::env::var("OLLAMA_MODEL") {
+        Ok(m) if !m.is_empty() => m,
+        _ => {
+            let models = client.list_models().context(
+                "Ollama not reachable. Is it running? Try: ollama serve",
+            )?;
 
-    let enhancer = NoteEnhancerBuilder::new().client(Arc::new(client)).build();
+            models.into_iter().next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No models installed in Ollama. Install one with: ollama pull gemma3:4b"
+                )
+            })?
+        }
+    };
+
+    let enhancer = NoteEnhancerBuilder::new().client(client).build();
 
     let result = enhancer
         .enhance_content(&model, content)
@@ -975,13 +1008,10 @@ fn execute_tag_alias_remove(alias: &str, db: Database) -> Result<()> {
 ///
 /// # Fail-Safe Behavior
 ///
-/// - Returns early with clear error if OLLAMA_MODEL not set
+/// - Auto-detects model from Ollama if OLLAMA_MODEL not set
 /// - Returns early with message if no tags exist
-/// - LLM errors are caught and logged (though they still propagate as errors)
+/// - Returns clear error if Ollama not reachable or no models installed
 fn execute_hierarchy_suggest(db: Database) -> Result<()> {
-    // Read OLLAMA_MODEL from environment (fail early if not set)
-    let model = std::env::var("OLLAMA_MODEL").context("OLLAMA_MODEL not set")?;
-
     let service = NoteService::new(db);
 
     // Get all tags that have at least one associated note
@@ -1005,13 +1035,29 @@ fn execute_hierarchy_suggest(db: Database) -> Result<()> {
     println!("Analyzing {} tags", tag_names.len());
 
     // Build OllamaClient and HierarchySuggester
-    let client = OllamaClientBuilder::new()
-        .build()
-        .context("Failed to build Ollama client")?;
+    let client = Arc::new(
+        OllamaClientBuilder::new()
+            .build()
+            .context("Failed to build Ollama client")?,
+    );
 
-    let suggester = HierarchySuggesterBuilder::new()
-        .client(Arc::new(client))
-        .build();
+    // Try OLLAMA_MODEL env var first, then auto-detect from Ollama
+    let model = match std::env::var("OLLAMA_MODEL") {
+        Ok(m) if !m.is_empty() => m,
+        _ => {
+            let models = client.list_models().context(
+                "Ollama not reachable. Is it running? Try: ollama serve",
+            )?;
+
+            models.into_iter().next().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No models installed in Ollama. Install one with: ollama pull gemma3:4b"
+                )
+            })?
+        }
+    };
+
+    let suggester = HierarchySuggesterBuilder::new().client(client).build();
 
     // Call suggest_relationships (returns Vec<RelationshipSuggestion>)
     // Already filtered to confidence >= 0.7 by HierarchySuggester
@@ -1273,25 +1319,50 @@ mod tests {
     }
 
     #[test]
-    fn auto_tag_returns_error_when_model_not_configured() {
-        // Test that auto_tag_note returns an error when OLLAMA_MODEL is not set
-        // This error is caught by execute_add and logged, not propagated
+    #[serial]
+    fn auto_tag_returns_error_when_ollama_not_reachable() {
+        // Test that auto_tag_note returns a helpful error when Ollama is not reachable
+        // and OLLAMA_MODEL is not set (triggering auto-detection)
+
+        // Save current env vars
+        let old_host = std::env::var("OLLAMA_HOST").ok();
+        let old_model = std::env::var("OLLAMA_MODEL").ok();
+
+        // Point to a non-existent Ollama instance and clear OLLAMA_MODEL
+        // SAFETY: This test runs serially
+        unsafe {
+            std::env::set_var("OLLAMA_HOST", "http://127.0.0.1:99999");
+            std::env::remove_var("OLLAMA_MODEL");
+        };
+
         let db = Database::in_memory().expect("failed to create in-memory database");
         let service = NoteService::new(db);
         let note_id = NoteId::new(1);
 
-        // Ensure OLLAMA_MODEL is not set for this test
-        // SAFETY: This test runs in isolation and doesn't rely on OLLAMA_MODEL being set
-        unsafe { std::env::remove_var("OLLAMA_MODEL") };
-
         let result = auto_tag_note(&service, note_id, "Test note");
+
+        // Restore env vars
+        unsafe {
+            match old_host {
+                Some(v) => std::env::set_var("OLLAMA_HOST", v),
+                None => std::env::remove_var("OLLAMA_HOST"),
+            }
+            match old_model {
+                Some(v) => std::env::set_var("OLLAMA_MODEL", v),
+                None => std::env::remove_var("OLLAMA_MODEL"),
+            }
+        };
+
         assert!(
             result.is_err(),
-            "should return error when model not configured"
+            "should return error when Ollama not reachable"
         );
+
+        let error_msg = result.unwrap_err().to_string();
+        // Should mention Ollama or provide helpful guidance
         assert!(
-            result.unwrap_err().to_string().contains("OLLAMA_MODEL"),
-            "error should mention OLLAMA_MODEL"
+            error_msg.contains("Ollama") || error_msg.contains("ollama"),
+            "error should mention Ollama: {error_msg}"
         );
     }
 
@@ -2285,24 +2356,54 @@ mod tests {
 
     #[test]
     #[serial]
-    fn execute_hierarchy_suggest_handles_missing_ollama_model() {
-        // Ensure OLLAMA_MODEL is not set for this test
-        unsafe { std::env::remove_var("OLLAMA_MODEL") };
+    fn execute_hierarchy_suggest_handles_ollama_not_reachable() {
+        // Save current env vars
+        let old_host = std::env::var("OLLAMA_HOST").ok();
+        let old_model = std::env::var("OLLAMA_MODEL").ok();
+
+        // Point to a non-existent Ollama instance and clear OLLAMA_MODEL
+        unsafe {
+            std::env::set_var("OLLAMA_HOST", "http://127.0.0.1:99999");
+            std::env::remove_var("OLLAMA_MODEL");
+        };
 
         let db = Database::in_memory().expect("failed to create in-memory database");
 
-        // This should fail with clear error about OLLAMA_MODEL not being set
+        // Insert a note and tag directly so execute_hierarchy_suggest doesn't return early
+        db.connection()
+            .execute("INSERT INTO notes (id, content) VALUES (1, 'Test note')", [])
+            .expect("failed to insert note");
+        db.connection()
+            .execute("INSERT INTO tags (id, name) VALUES (1, 'test-tag')", [])
+            .expect("failed to insert tag");
+        db.connection()
+            .execute("INSERT INTO note_tags (note_id, tag_id) VALUES (1, 1)", [])
+            .expect("failed to insert note_tag");
+
+        // This should fail because Ollama is not reachable for auto-detection
         let result = execute_hierarchy_suggest(db);
+
+        // Restore env vars
+        unsafe {
+            match old_host {
+                Some(v) => std::env::set_var("OLLAMA_HOST", v),
+                None => std::env::remove_var("OLLAMA_HOST"),
+            }
+            match old_model {
+                Some(v) => std::env::set_var("OLLAMA_MODEL", v),
+                None => std::env::remove_var("OLLAMA_MODEL"),
+            }
+        };
 
         assert!(
             result.is_err(),
-            "should return error when OLLAMA_MODEL not set"
+            "should return error when Ollama not reachable"
         );
 
         let error_msg = result.unwrap_err().to_string();
         assert!(
-            error_msg.contains("OLLAMA_MODEL"),
-            "error should mention OLLAMA_MODEL"
+            error_msg.contains("Ollama") || error_msg.contains("ollama"),
+            "error should mention Ollama: {error_msg}"
         );
     }
 

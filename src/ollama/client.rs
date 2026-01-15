@@ -166,6 +166,48 @@ impl OllamaClient {
         &self.model
     }
 
+    /// Lists available models from the Ollama API, sorted by size (largest first).
+    ///
+    /// Fetches the `/api/tags` endpoint and returns model names.
+    /// Returns an empty Vec if the request fails or no models are available.
+    pub fn list_models(&self) -> Result<Vec<String>, OllamaError> {
+        let url = format!("{}/api/tags", self.base_url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .map_err(OllamaError::Network)?;
+
+        if !response.status().is_success() {
+            return Err(OllamaError::Http {
+                status: response.status().as_u16(),
+            });
+        }
+
+        let json: serde_json::Value = response.json().map_err(OllamaError::Network)?;
+
+        let mut models: Vec<(String, u64)> = json
+            .get("models")
+            .and_then(|m| m.as_array())
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(|model| {
+                        let name = model.get("name").and_then(|n| n.as_str())?;
+                        let size = model.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
+                        Some((name.to_string(), size))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Sort by size descending (largest first)
+        models.sort_by(|a, b| b.1.cmp(&a.1));
+
+        Ok(models.into_iter().map(|(name, _)| name).collect())
+    }
+
     /// Generates text using the Ollama API.
     ///
     /// This is the internal implementation that will be called by the trait method.
