@@ -378,13 +378,21 @@ mod tests {
         // Press j - should scroll down, not change selection
         let key_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE);
         handle_key_event(&mut app, key_j);
-        assert_eq!(app.selected_index(), Some(0), "j should not change selection");
+        assert_eq!(
+            app.selected_index(),
+            Some(0),
+            "j should not change selection"
+        );
         assert_eq!(app.detail_scroll(), 1, "j should scroll down");
 
         // Press k - should scroll up
         let key_k = KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE);
         handle_key_event(&mut app, key_k);
-        assert_eq!(app.selected_index(), Some(0), "k should not change selection");
+        assert_eq!(
+            app.selected_index(),
+            Some(0),
+            "k should not change selection"
+        );
         assert_eq!(app.detail_scroll(), 0, "k should scroll up");
 
         // Press k again - should not go negative

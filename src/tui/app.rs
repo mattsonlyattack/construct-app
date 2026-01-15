@@ -117,7 +117,8 @@ impl App {
             self.notes = self.all_notes.clone();
         } else {
             // Filter notes by content (case-insensitive)
-            self.notes = self.all_notes
+            self.notes = self
+                .all_notes
                 .iter()
                 .filter(|note| note.content().to_lowercase().contains(&query))
                 .cloned()
@@ -808,10 +809,12 @@ mod tests {
         assert_eq!(app.all_notes().len(), 2);
 
         // Simulate search results - only 1 note matches
-        let filtered = vec![NoteBuilder::new()
-            .id(NoteId::new(1))
-            .content("Note A")
-            .build()];
+        let filtered = vec![
+            NoteBuilder::new()
+                .id(NoteId::new(1))
+                .content("Note A")
+                .build(),
+        ];
         app.set_filtered_notes(filtered);
 
         // Displayed notes updated, but all_notes unchanged
@@ -836,10 +839,12 @@ mod tests {
         app.set_notes(notes);
 
         // Simulate filtered results
-        app.set_filtered_notes(vec![NoteBuilder::new()
-            .id(NoteId::new(1))
-            .content("Hello world")
-            .build()]);
+        app.set_filtered_notes(vec![
+            NoteBuilder::new()
+                .id(NoteId::new(1))
+                .content("Hello world")
+                .build(),
+        ]);
         assert_eq!(app.notes().len(), 1);
 
         // Apply filter with empty search restores all

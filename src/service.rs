@@ -486,12 +486,20 @@ impl NoteService {
                     let tag_created_at: i64 = row.get(4)?;
                     let model_version: Option<String> = row.get(5)?;
 
-                    Ok((tag_id, tag_name, confidence, source, tag_created_at, model_version))
+                    Ok((
+                        tag_id,
+                        tag_name,
+                        confidence,
+                        source,
+                        tag_created_at,
+                        model_version,
+                    ))
                 })?;
 
                 let mut tag_assignments = Vec::new();
                 for row_result in tag_rows {
-                    let (tag_id, tag_name, confidence, source, tag_created_at, model_version) = row_result?;
+                    let (tag_id, tag_name, confidence, source, tag_created_at, model_version) =
+                        row_result?;
 
                     let tag_assignment = if source == "user" {
                         TagAssignment::user(

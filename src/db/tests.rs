@@ -1,4 +1,5 @@
 use super::*;
+use crate::db::schema::MIGRATIONS;
 use rusqlite::OptionalExtension;
 use tempfile::tempdir;
 
@@ -826,10 +827,13 @@ fn fts_index_populated_on_database_open() {
     let db_path = dir.path().join("test.db");
 
     // Create database and insert notes before FTS exists
+    // Apply migrations directly (bypassing Database::open which creates FTS)
     {
-        let conn = Connection::open(&db_path).unwrap();
+        let mut conn = Connection::open(&db_path).unwrap();
         conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
-        conn.execute_batch(INITIAL_SCHEMA).unwrap();
+        for migration in MIGRATIONS {
+            migration.apply(&mut conn).unwrap();
+        }
 
         // Insert test notes
         conn.execute(

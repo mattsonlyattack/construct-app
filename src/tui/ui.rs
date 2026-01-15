@@ -191,7 +191,8 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
         // Enhanced content section (if available)
         if let Some(enhanced) = note.content_enhanced() {
             text.lines.push(Line::from(""));
-            text.lines.push(Line::from("───────────────────────────────"));
+            text.lines
+                .push(Line::from("───────────────────────────────"));
             text.lines.push(Line::from(""));
 
             // Enhanced label with confidence
@@ -231,10 +232,7 @@ fn render_detail_view(frame: &mut Frame, app: &App, area: Rect) {
 
                 text.lines.push(Line::from(vec![
                     Span::raw("  - "),
-                    Span::styled(
-                        tag.name().to_string(),
-                        Style::default().fg(Color::Cyan),
-                    ),
+                    Span::styled(tag.name().to_string(), Style::default().fg(Color::Cyan)),
                     Span::raw(" "),
                     Span::styled(
                         format!("({source_indicator})"),

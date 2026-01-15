@@ -1,3 +1,4 @@
+mod migration;
 mod schema;
 
 use std::path::Path;
@@ -5,7 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::Connection;
 
-use schema::{FTS_TABLE_CREATION, FTS_TRIGGERS, INITIAL_SCHEMA, MIGRATIONS};
+use schema::{FTS_TABLE_CREATION, FTS_TRIGGERS, apply_pending_migrations};
 
 /// Database wrapper providing connection management and schema initialization.
 pub struct Database {
@@ -18,7 +19,7 @@ impl Database {
     /// Automatically initializes the schema on connection open.
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.initialize_schema()?;
         Ok(db)
     }
@@ -29,51 +30,22 @@ impl Database {
     /// Automatically initializes the schema on connection open.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(path)?;
-        let db = Self { conn };
+        let mut db = Self { conn };
         db.initialize_schema()?;
         Ok(db)
     }
 
     /// Initializes the database schema.
     ///
-    /// Executes all schema statements in a single transaction.
-    /// Uses IF NOT EXISTS for idempotent execution.
-    /// Runs migrations for column additions, ignoring "duplicate column" errors.
+    /// Applies all pending migrations in version order.
     /// Creates FTS5 virtual table and triggers if they don't exist.
     /// Populates FTS index from existing notes.
-    fn initialize_schema(&self) -> Result<()> {
+    /// Migrations are additive-only and support old database versions.
+    fn initialize_schema(&mut self) -> Result<()> {
         self.conn.execute("PRAGMA foreign_keys = ON", [])?;
-        self.conn.execute_batch(INITIAL_SCHEMA)?;
 
-        // Execute migrations line by line, ignoring "duplicate column" errors
-        // This allows idempotent execution on both fresh and existing databases
-        for statement in MIGRATIONS.lines() {
-            let trimmed = statement.trim();
-            // Skip empty lines and comments
-            if trimmed.is_empty() || trimmed.starts_with("--") {
-                continue;
-            }
-
-            // Execute ALTER TABLE statements, ignoring duplicate column errors
-            match self.conn.execute(trimmed, []) {
-                Ok(_) => {}
-                Err(rusqlite::Error::SqliteFailure(err, msg)) => {
-                    // Check if this is a "duplicate column name" error
-                    // SQLite returns SQLITE_ERROR (code 1) for duplicate columns
-                    let is_duplicate_column = msg
-                        .as_ref()
-                        .map(|s| s.contains("duplicate column"))
-                        .unwrap_or(false);
-
-                    if !is_duplicate_column {
-                        // Not a duplicate column error, propagate it
-                        return Err(rusqlite::Error::SqliteFailure(err, msg).into());
-                    }
-                    // Otherwise, silently ignore duplicate column errors
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
+        // Apply all pending migrations
+        apply_pending_migrations(&mut self.conn)?;
 
         // Backfill degree centrality for existing tags
         // This is idempotent and safe to re-run on every database open
