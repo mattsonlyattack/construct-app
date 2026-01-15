@@ -26,6 +26,7 @@ jobs:
           repository: mattsonlyattack/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
+          persist-credentials: false
 
       - name: Download release assets and compute SHA256
         env:
@@ -111,12 +112,8 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           cd homebrew-tap
-          # Clear any cached credentials
-          git config --local credential.helper ""
-          git config --local --unset-all http.https://github.com/.extraheader || true
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/mattsonlyattack/homebrew-tap.git"
           git add Formula/cons.rb
           git commit -m "Update cons to $VERSION"
-          git push
+          git push "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/mattsonlyattack/homebrew-tap.git" HEAD:main
