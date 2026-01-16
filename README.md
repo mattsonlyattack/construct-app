@@ -12,6 +12,12 @@ $ cons add "interesting pattern in async rust: using tokio::select with timeouts
   Tags (AI): rust, async, patterns, tokio
 ```
 
+## Install
+
+```bash
+brew install mattsonlyattack/tap/cons
+```
+
 ## The Problem
 
 Every PKM tool imposes an "organization tax" on note capture. You must decide:
@@ -67,23 +73,12 @@ Integrates into existing terminal workflows. Capture from any terminal, anywhere
 ### Fail-Safe Architecture
 LLM failures never block note capture. Notes save successfully even if tagging fails. AI augments, never gatekeeps.
 
-## Installation
-
-### Homebrew (macOS)
-
-```bash
-brew install mattsonlyattack/tap/cons
-```
-
-### Prerequisites
+## Prerequisites
 
 [Ollama](https://ollama.ai/) with a model for AI features:
 
 ```bash
-# Install Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
-
-# Pull a model (deepseek-r1:8b recommended)
 ollama pull deepseek-r1:8b
 ```
 
@@ -92,7 +87,6 @@ ollama pull deepseek-r1:8b
 ```bash
 git clone https://github.com/mattsonlyattack/construct-app.git
 cd construct-app
-cargo build --release
 cargo install --path .
 ```
 
