@@ -1,7 +1,7 @@
 pub use super::migration::apply_pending_migrations;
 // Re-export for tests
 #[cfg(test)]
-pub use super::migration::{Migration, MIGRATIONS};
+pub use super::migration::MIGRATIONS;
 
 /// FTS5 virtual table creation SQL.
 ///

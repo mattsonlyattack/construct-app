@@ -1,3 +1,4 @@
+pub mod answerer;
 pub mod autotagger;
 pub mod db;
 pub mod doctor;
@@ -10,6 +11,7 @@ pub mod spreading_activation;
 pub mod tui;
 pub mod utils;
 
+pub use answerer::{Citation, QueryAnswerer, QueryAnswererBuilder, QueryResult, QueryType};
 pub use autotagger::{AutoTagger, AutoTaggerBuilder, TagNormalizer};
 pub use db::Database;
 pub use enhancer::{EnhancementResult, NoteEnhancer, NoteEnhancerBuilder};

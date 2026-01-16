@@ -10,6 +10,11 @@
 use cons::{NoteEnhancerBuilder, OllamaClientBuilder};
 use std::sync::Arc;
 
+/// Load environment from .env file (same as main app)
+fn load_env() {
+    let _ = dotenvy::dotenv();
+}
+
 /// Skip test if running in GitHub Actions
 fn skip_in_ci() -> bool {
     if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
@@ -47,6 +52,7 @@ fn get_model(base_url: &str) -> String {
 /// Test that NoteEnhancer can enhance a fragmentary note with real Ollama.
 #[test]
 fn enhance_fragmentary_note_with_real_ollama() {
+    load_env();
     if skip_in_ci() {
         return;
     }
@@ -97,6 +103,7 @@ fn enhance_fragmentary_note_with_real_ollama() {
 /// Test that NoteEnhancer handles already-complete notes appropriately.
 #[test]
 fn enhance_complete_note_with_real_ollama() {
+    load_env();
     if skip_in_ci() {
         return;
     }

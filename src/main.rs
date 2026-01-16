@@ -3,9 +3,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cons::{
-    Database, NoteId, NoteService, TagId, TagSource, autotagger::AutoTaggerBuilder,
-    enhancer::NoteEnhancerBuilder, ensure_database_directory, get_database_path, get_tag_names,
-    hierarchy::HierarchySuggesterBuilder, ollama::OllamaClientBuilder,
+    Database, NoteId, NoteService, TagId, TagSource, answerer::QueryAnswererBuilder,
+    autotagger::AutoTaggerBuilder, enhancer::NoteEnhancerBuilder, ensure_database_directory,
+    get_database_path, get_tag_names, hierarchy::HierarchySuggesterBuilder,
+    ollama::OllamaClientBuilder,
 };
 
 /// cons - structure-last personal knowledge management CLI
@@ -29,6 +30,8 @@ enum Commands {
     Search(SearchCommand),
     /// Search notes using graph-based spreading activation
     GraphSearch(GraphSearchCommand),
+    /// Ask a natural language question about your notes
+    Ask(AskCommand),
     /// Manage tags
     Tags(TagsCommand),
     /// Manage tag aliases
@@ -87,6 +90,22 @@ struct GraphSearchCommand {
     /// Maximum number of results to display (default: 10)
     #[arg(short, long, value_name = "LIMIT")]
     limit: Option<usize>,
+}
+
+/// Ask a natural language question about your notes
+#[derive(Parser)]
+struct AskCommand {
+    /// The question or query about your notes
+    #[arg(value_name = "QUERY")]
+    query: String,
+
+    /// Maximum number of notes to retrieve for context (default: 10)
+    #[arg(short = 'k', long, value_name = "TOP_K", default_value = "10")]
+    top_k: usize,
+
+    /// Include detailed citation information in output
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 /// Manage tags
@@ -173,6 +192,7 @@ fn main() {
         Commands::List(cmd) => handle_list(cmd),
         Commands::Search(cmd) => handle_search(cmd),
         Commands::GraphSearch(cmd) => handle_graph_search(cmd),
+        Commands::Ask(cmd) => handle_ask(cmd),
         Commands::Tags(cmd) => handle_tags(cmd),
         Commands::TagAlias(cmd) => handle_tag_alias(cmd),
         Commands::Hierarchy(cmd) => handle_hierarchy(cmd),
@@ -820,6 +840,158 @@ fn format_note_content(note: &cons::Note) -> String {
 }
 
 // get_tag_names moved to src/utils.rs for reuse across CLI and TUI
+
+/// Handles the ask command.
+fn handle_ask(cmd: &AskCommand) -> Result<()> {
+    // Get database path and ensure directory exists
+    let db_path = get_database_path()?;
+    ensure_database_directory(&db_path)?;
+
+    // Open database and create service
+    let db = Database::open(&db_path).context("Failed to open database")?;
+    let service = NoteService::new(db);
+
+    execute_ask(&cmd.query, cmd.top_k, cmd.verbose, service)
+}
+
+/// Extracts keywords from a natural language query by removing common stop words.
+///
+/// This is used to convert questions like "what color is the sky" into search
+/// terms like "color sky" that work better with FTS.
+fn extract_search_keywords(query: &str) -> String {
+    const STOP_WORDS: &[&str] = &[
+        "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "must", "shall", "can", "need", "dare",
+        "ought", "used", "to", "of", "in", "for", "on", "with", "at", "by",
+        "from", "as", "into", "through", "during", "before", "after", "above",
+        "below", "between", "under", "again", "further", "then", "once",
+        "what", "which", "who", "whom", "this", "that", "these", "those",
+        "am", "been", "being", "and", "but", "if", "or", "because", "until",
+        "while", "about", "against", "between", "into", "through", "during",
+        "before", "after", "above", "below", "up", "down", "out", "off",
+        "over", "under", "again", "further", "then", "once", "here", "there",
+        "when", "where", "why", "how", "all", "each", "few", "more", "most",
+        "other", "some", "such", "no", "nor", "not", "only", "own", "same",
+        "so", "than", "too", "very", "just", "also", "now", "my", "your",
+        "his", "her", "its", "our", "their", "i", "you", "he", "she", "it",
+        "we", "they", "me", "him", "us", "them", "tell", "show", "find",
+        "give", "wrote", "write", "written", "did", "know", "think", "about",
+    ];
+
+    let keywords: Vec<&str> = query
+        .split_whitespace()
+        .filter(|word| {
+            let lower = word.to_lowercase();
+            let cleaned: &str = lower.trim_matches(|c: char| !c.is_alphanumeric());
+            !cleaned.is_empty() && !STOP_WORDS.contains(&cleaned)
+        })
+        .collect();
+
+    if keywords.is_empty() {
+        // Fall back to original query if all words are stop words
+        query.to_string()
+    } else {
+        keywords.join(" ")
+    }
+}
+
+/// Executes the ask command logic with a provided NoteService.
+///
+/// This function is separated from `handle_ask` to allow testing with in-memory databases.
+fn execute_ask(
+    query: &str,
+    top_k: usize,
+    verbose: bool,
+    service: NoteService,
+) -> Result<()> {
+    // Validate query
+    let query = query.trim();
+    if query.is_empty() {
+        anyhow::bail!("Query cannot be empty");
+    }
+
+    // Extract keywords for search (remove stop words from natural language query)
+    let search_query = extract_search_keywords(query);
+
+    // Retrieve relevant notes using dual_search with extracted keywords
+    let (results, _metadata) = service
+        .dual_search(&search_query, Some(top_k))
+        .context("Failed to search notes")?;
+
+    // Handle case where no notes found
+    if results.is_empty() {
+        println!("I couldn't find any notes related to your query.");
+        println!("Try adding some notes first with: cons add \"your note\"");
+        return Ok(());
+    }
+
+    // Create Ollama client and QueryAnswerer
+    let ollama_client = OllamaClientBuilder::new()
+        .build()
+        .context("Failed to create Ollama client")?;
+
+    let model = ollama_client.model().to_string();
+    let model = if model.is_empty() {
+        "deepseek-r1:8b".to_string()
+    } else {
+        model
+    };
+
+    let answerer = QueryAnswererBuilder::new()
+        .client(Arc::new(ollama_client))
+        .build();
+
+    // Generate answer with citations
+    let result = answerer
+        .answer_query(&model, query, &results)
+        .context("Failed to generate answer")?;
+
+    // Display result
+    display_query_result(&result, verbose)?;
+
+    Ok(())
+}
+
+/// Displays query result to the user.
+fn display_query_result(result: &cons::QueryResult, verbose: bool) -> Result<()> {
+    // Handle refusal case
+    if result.is_no_relevant_notes() {
+        println!("I couldn't find relevant information in your notes to answer this question.");
+        if let Some(reason) = result.refusal_reason() {
+            println!("Reason: {}", reason);
+        }
+        return Ok(());
+    }
+
+    // Display answer
+    println!("{}", result.answer());
+    println!();
+
+    // Display citations
+    if !result.citations().is_empty() {
+        println!("Sources:");
+        for citation in result.citations() {
+            let note_marker = if verbose {
+                format!("[Note #{}] Relevance: {:.0}%", citation.note_id().get(), citation.relevance() * 100.0)
+            } else {
+                format!("[#{}]", citation.note_id().get())
+            };
+
+            // Truncate snippet for display
+            let snippet = citation.snippet();
+            let snippet = if snippet.len() > 80 {
+                format!("{}...", &snippet[..80])
+            } else {
+                snippet.to_string()
+            };
+
+            println!("  {} \"{}\"", note_marker, snippet);
+        }
+    }
+
+    Ok(())
+}
 
 /// Handles the tags command by dispatching to subcommand handlers.
 fn handle_tags(cmd: &TagsCommand) -> Result<()> {

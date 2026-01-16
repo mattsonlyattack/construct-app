@@ -98,7 +98,7 @@ impl OllamaClientBuilder {
         let base_url = if let Some(url) = self.base_url {
             url
         } else {
-            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://172.17.64.1:11434".to_string())
+            std::env::var("OLLAMA_HOST").unwrap_or_else(|_| "http://localhost:11434".to_string())
         };
 
         // Determine model: use builder value, then env var, then default
@@ -433,7 +433,7 @@ mod tests {
         let client = OllamaClientBuilder::new().build();
         assert!(client.is_ok());
         let client = client.unwrap();
-        assert_eq!(client.base_url(), "http://172.17.64.1:11434");
+        assert_eq!(client.base_url(), "http://localhost:11434");
     }
 
     #[test]

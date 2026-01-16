@@ -9,6 +9,11 @@
 /// ```
 use cons::{OllamaClientBuilder, OllamaClientTrait};
 
+/// Load environment from .env file (same as main app)
+fn load_env() {
+    let _ = dotenvy::dotenv();
+}
+
 /// Skip test if running in GitHub Actions
 fn skip_in_ci() -> bool {
     if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
@@ -25,6 +30,7 @@ fn skip_in_ci() -> bool {
 /// - A model available (specify via OLLAMA_MODEL env var, or auto-detects)
 #[test]
 fn generate_with_real_ollama_instance() {
+    load_env();
     if skip_in_ci() {
         return;
     }
@@ -96,6 +102,7 @@ fn generate_with_real_ollama_instance() {
 /// is not available, which is important for fail-safe behavior.
 #[test]
 fn generate_handles_missing_ollama_gracefully() {
+    load_env();
     if skip_in_ci() {
         return;
     }

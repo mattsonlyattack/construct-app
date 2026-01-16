@@ -4096,6 +4096,13 @@ fn graph_search_alias_expansion_then_spreading_activation() {
 fn graph_search_edge_confidence_affects_activation_propagation() {
     // Test edge confidence weighting: low-confidence edge (0.3) vs high-confidence (0.9)
     // Validates: confidence multiplier in spreading formula
+    // Clear any environment variables that might affect this test
+    unsafe {
+        std::env::remove_var("CONS_DECAY");
+        std::env::remove_var("CONS_THRESHOLD");
+        std::env::remove_var("CONS_MAX_HOPS");
+    }
+
     let db = Database::in_memory().expect("failed to create in-memory database");
     let service = NoteService::new(db);
 
@@ -5004,6 +5011,13 @@ fn dual_search_custom_config_weights_affect_final_score() {
 #[test]
 fn dual_search_graph_only_results() {
     // Edge case: Note found via graph spreading activation but not by FTS
+    // Clear any environment variables that might affect this test
+    unsafe {
+        std::env::remove_var("CONS_FTS_WEIGHT");
+        std::env::remove_var("CONS_GRAPH_WEIGHT");
+        std::env::remove_var("CONS_INTERSECTION_BONUS");
+    }
+
     let db = Database::in_memory().expect("failed to create in-memory database");
     let service = NoteService::new(db);
 
