@@ -69,25 +69,34 @@ LLM failures never block note capture. Notes save successfully even if tagging f
 
 ## Installation
 
+### Homebrew (macOS)
+
+```bash
+brew install mattsonlyattack/tap/cons
+```
+
 ### Prerequisites
-- Rust 1.83+ ([install](https://rustup.rs/))
-- [Ollama](https://ollama.ai/) with `deepseek-r1:8b` model
+
+[Ollama](https://ollama.ai/) with a model for AI features:
 
 ```bash
 # Install Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
 
-# Pull the model
+# Pull a model (deepseek-r1:8b recommended)
 ollama pull deepseek-r1:8b
 ```
 
 ### Build from source
+
 ```bash
-git clone https://github.com/yourusername/cons.git
-cd cons
+git clone https://github.com/mattsonlyattack/construct-app.git
+cd construct-app
 cargo build --release
 cargo install --path .
 ```
+
+Requires Rust 1.83+ ([install](https://rustup.rs/))
 
 ## Quick Start
 
